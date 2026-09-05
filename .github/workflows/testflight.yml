@@ -1,79 +1,60 @@
-name: TideCam TestFlight
+name: TideCam to TestFlight
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tidecam-testflight
+  cancel-in-progress: false
 
 jobs:
-  testflight:
-    runs-on: macos-26
-    timeout-minutes: 30
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Check out TideCam
+        uses: actions/checkout@v4
 
-      - name: Validate signing configuration
-        env:
-          CERT: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
-          ASC_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
-          ASC_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
-          ASC_ISSUER: ${{ vars.APPSTORE_ISSUER_ID }}
+      - name: Select Xcode
         run: |
-          test -n "$CERT" || { echo 'Missing APPSTORE_CERTIFICATES_FILE_BASE64'; exit 1; }
-          test -n "$CERT_PASSWORD" || { echo 'Missing APPSTORE_CERTIFICATES_PASSWORD'; exit 1; }
-          test -n "$ASC_KEY" || { echo 'Missing APPSTORE_API_PRIVATE_KEY'; exit 1; }
-          test -n "$ASC_KEY_ID" || { echo 'Missing APPSTORE_API_KEY_ID'; exit 1; }
-          test -n "$ASC_ISSUER" || { echo 'Missing APPSTORE_ISSUER_ID'; exit 1; }
+          if [ -d /Applications/Xcode_26.3.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.app
+          fi
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Generate Xcode project
+      - name: Generate TideCam Xcode project
         run: xcodegen generate --spec project.yml
 
-      - name: Import Apple Distribution certificate
-        uses: apple-actions/import-codesign-certs@v7
-        with:
-          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
-          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+      - name: Install TestFlight lane
+        run: |
+          mkdir -p fastlane
+          cp ios-ci/Gemfile Gemfile
+          cp ios-ci/Fastfile fastlane/Fastfile
 
-      - name: Download App Store provisioning profile
-        uses: apple-actions/download-provisioning-profiles@v1
+      - name: Set up Ruby and Fastlane
+        uses: ruby/setup-ruby@v1
         with:
-          bundle-id: com.jdarkyeka6.TideCam
-          profile-type: IOS_APP_STORE
-          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ruby-version: "3.3"
+          bundler-cache: true
 
-      - name: Archive and export IPA
-        id: build
-        uses: Apple-Actions/xcodebuild@v1
-        with:
-          project: TideCam.xcodeproj
-          scheme: TideCam
-          sdk: iphoneos
-          action: archive
-          archive-path: .build/Archives/TideCam.xcarchive
-          export-options-plist: ExportOptions.plist
-          export-path: .build/ipa
-          build-number: ${{ github.run_number }}
-          build-settings: |
-            DEVELOPMENT_TEAM=${{ vars.APPLE_DEVELOPMENT_TEAM }}
+      - name: Build, sign and upload TideCam
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bundle exec fastlane beta
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v5
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: TideCam-${{ github.run_number }}-ipa
-          path: ${{ steps.build.outputs.ipa-path }}
-          if-no-files-found: error
-
-      - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v4
-        with:
-          app-path: ${{ steps.build.outputs.ipa-path }}
-          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
-          app-type: ios
-          wait-for-processing: true
+          name: tidecam-ipa
+          path: "*.ipa"
+          if-no-files-found: warn
