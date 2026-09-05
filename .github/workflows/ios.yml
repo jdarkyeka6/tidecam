@@ -1,0 +1,32 @@
+name: iOS Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect Xcode project
+        id: project
+        run: |
+          if find . -maxdepth 2 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Project not generated yet
+        if: steps.project.outputs.exists == 'false'
+        run: |
+          echo 'TideCam source is present, but the Xcode project has not been generated yet.'
+          echo 'Create the native project on the first Mac build pass, then replace this guard with xcodebuild.'
+      - name: Build project
+        if: steps.project.outputs.exists == 'true'
+        run: |
+          set -o pipefail
+          PROJECT=$(find . -maxdepth 2 -name '*.xcodeproj' | head -1)
+          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
