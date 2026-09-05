@@ -11,8 +11,8 @@ enum CameraMode: String, CaseIterable, Identifiable {
 
     var isImplemented: Bool {
         switch self {
-        case .photo, .detail, .pro: return true
-        case .spatial, .video: return false
+        case .photo, .detail, .pro, .video: return true
+        case .spatial: return false
         }
     }
 }
@@ -23,6 +23,7 @@ struct CameraCapabilities: Equatable {
     var supportsCustomExposure = false
     var supportsTorch = false
     var supportsDepth = false
+    var supportsVideo = false
     var minimumISO: Float = 0
     var maximumISO: Float = 0
 }
