@@ -13,6 +13,7 @@ concurrency:
   group: tidecam-testflight
   cancel-in-progress: false
 
+# Trigger 3: retry transient Apple provisioning failures.
 jobs:
   build:
     runs-on: macos-15
