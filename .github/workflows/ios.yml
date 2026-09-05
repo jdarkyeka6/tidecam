@@ -4,29 +4,45 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Detect Xcode project
-        id: project
+
+      - name: Show Apple toolchain
         run: |
-          if find . -maxdepth 2 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) | grep -q .; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Project not generated yet
-        if: steps.project.outputs.exists == 'false'
-        run: |
-          echo 'TideCam source is present, but the Xcode project has not been generated yet.'
-          echo 'Create the native project on the first Mac build pass, then replace this guard with xcodebuild.'
-      - name: Build project
-        if: steps.project.outputs.exists == 'true'
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Inspect generated project
+        run: xcodebuild -project TideCam.xcodeproj -scheme TideCam -list
+
+      - name: Compile TideCam for iOS Simulator
         run: |
           set -o pipefail
-          PROJECT=$(find . -maxdepth 2 -name '*.xcodeproj' | head -1)
-          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
+          xcodebuild \
+            -project TideCam.xcodeproj \
+            -scheme TideCam \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild.log
+
+      - name: Upload compiler log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tidecam-xcodebuild-log
+          path: xcodebuild.log
+          if-no-files-found: ignore
