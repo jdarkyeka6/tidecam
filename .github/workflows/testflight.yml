@@ -25,6 +25,9 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Generate temporary TideCam app icon
+        run: python3 ios-ci/generate_app_icon.py
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
