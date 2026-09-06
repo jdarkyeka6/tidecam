@@ -6,6 +6,7 @@ struct TideCamLibraryView: View {
     @StateObject private var store = TideCamLibraryStore.shared
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var selectedItem: TideCamLibraryItem?
+    @State private var showImportAllConfirmation = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -62,13 +63,18 @@ struct TideCamLibraryView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Camera") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     PhotosPicker(
                         selection: $pickerItems,
                         maxSelectionCount: 50,
                         matching: .images
                     ) {
-                        Label("Import", systemImage: "square.and.arrow.down")
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .disabled(store.isImporting)
+
+                    Button("Import All") {
+                        showImportAllConfirmation = true
                     }
                     .disabled(store.isImporting)
                 }
@@ -77,7 +83,7 @@ struct TideCamLibraryView: View {
                 if store.isImporting {
                     ZStack {
                         Color.black.opacity(0.35).ignoresSafeArea()
-                        ProgressView("Importing…")
+                        ProgressView(store.importProgressText ?? "Importing…")
                             .padding(18)
                             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
                     }
@@ -90,6 +96,18 @@ struct TideCamLibraryView: View {
                     await store.importFromPhotos(newItems)
                     pickerItems = []
                 }
+            }
+            .confirmationDialog(
+                "Import your entire Photos library?",
+                isPresented: $showImportAllConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Import All Photos") {
+                    Task { await store.importAllPhotos() }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("TideCam will copy every photo it can access into its own library. This can use a lot of storage for large photo libraries.")
             }
             .fullScreenCover(item: $selectedItem) { item in
                 TideCamPhotoViewer(item: item)
