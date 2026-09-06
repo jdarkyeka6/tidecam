@@ -1,6 +1,7 @@
 import Foundation
 import ImageIO
 import PhotosUI
+import SwiftUI
 import UniformTypeIdentifiers
 
 struct TideCamLibraryItem: Identifiable, Hashable {
