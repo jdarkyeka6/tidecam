@@ -88,8 +88,6 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    // Pro controls need a physical camera. Virtual triple/dual devices can switch
-    // constituent lenses under us and don't reliably expose manual lens position.
     private func bestDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
         if let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) {
             return physicalWide
@@ -145,14 +143,9 @@ final class CameraManager: NSObject, ObservableObject {
             settings = AVCapturePhotoSettings()
         }
 
-        // RAW capture and flash are not a safe combination on every device/format.
-        // Leave flash off for RAW rather than asking AVFoundation for an unsupported capture.
         if !isRawCapture, let device = videoInput?.device, device.hasFlash {
             settings.flashMode = flashMode.avMode
         }
-
-        // On RAW settings AVFoundation can abort if photoQualityPrioritization is changed.
-        // Use the RAW settings' supported default and only force quality for processed photos.
         if !isRawCapture {
             settings.photoQualityPrioritization = .quality
         }
@@ -347,10 +340,19 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func saveToLibrary(_ data: Data) {
+    private func saveToLibrary(_ data: Data, preferredExtension: String? = nil) {
+        do {
+            _ = try TideCamLibraryStorage.save(data, preferredExtension: preferredExtension)
+            TideCamLibraryStore.shared.refresh()
+        } catch {
+            errorMessage = "TideCam library save failed: \(error.localizedDescription)"
+        }
+
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else { return }
-            PHPhotoLibrary.shared().performChanges { PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil) }
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+            }
         }
     }
 
@@ -391,10 +393,8 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
 
         Task { @MainActor in
             if photo.isRawPhoto {
-                // A RAW capture is DNG data. Do not feed it through UIImage first.
-                // PhotoKit can save the DNG directly as a photo resource.
                 self.isCapturing = false
-                self.saveToLibrary(data)
+                self.saveToLibrary(data, preferredExtension: "dng")
                 return
             }
 
