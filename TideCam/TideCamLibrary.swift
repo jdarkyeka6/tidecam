@@ -10,6 +10,9 @@ struct TideCamLibraryItem: Identifiable, Hashable {
 
     var id: String { url.path }
     var isRAW: Bool { url.pathExtension.lowercased() == "dng" }
+    var isVideo: Bool {
+        ["mov", "mp4", "m4v"].contains(url.pathExtension.lowercased())
+    }
     var createdAt: Date {
         (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
     }
@@ -38,6 +41,15 @@ enum TideCamLibraryStorage {
         let url = try directoryURL().appendingPathComponent(filename)
         try data.write(to: url, options: .atomic)
         return url
+    }
+
+    static func saveFile(from sourceURL: URL, preferredExtension: String? = nil) throws -> URL {
+        let ext = preferredExtension ?? sourceURL.pathExtension.lowercased()
+        let finalExtension = ext.isEmpty ? "dat" : ext
+        let filename = "TideCam-\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(6)).\(finalExtension)"
+        let destination = try directoryURL().appendingPathComponent(filename)
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        return destination
     }
 
     static func detectedExtension(for data: Data) -> String {
