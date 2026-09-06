@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -52,7 +53,10 @@ final class TideCamLibraryStore: ObservableObject {
 
     @Published private(set) var items: [TideCamLibraryItem] = []
     @Published var isImporting = false
+    @Published var importProgressText: String?
     @Published var errorMessage: String?
+
+    private let importedAssetIDsKey = "TideCamImportedPhotoAssetIDs"
 
     private init() { refresh() }
 
@@ -75,7 +79,11 @@ final class TideCamLibraryStore: ObservableObject {
     func importFromPhotos(_ selections: [PhotosPickerItem]) async {
         guard !selections.isEmpty else { return }
         isImporting = true
-        defer { isImporting = false }
+        importProgressText = "Importing selected photos…"
+        defer {
+            isImporting = false
+            importProgressText = nil
+        }
 
         for selection in selections {
             do {
@@ -87,6 +95,92 @@ final class TideCamLibraryStore: ObservableObject {
             }
         }
         refresh()
+    }
+
+    func importAllPhotos() async {
+        guard !isImporting else { return }
+        isImporting = true
+        importProgressText = "Requesting Photos access…"
+        defer {
+            isImporting = false
+            importProgressText = nil
+        }
+
+        let status = await requestPhotoLibraryAccess()
+        guard status == .authorized || status == .limited else {
+            errorMessage = "TideCam needs Photos access to import your library."
+            return
+        }
+
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        let assets = PHAsset.fetchAssets(with: .image, options: options)
+        guard assets.count > 0 else {
+            importProgressText = "No photos found"
+            return
+        }
+
+        var importedIDs = Set(UserDefaults.standard.stringArray(forKey: importedAssetIDsKey) ?? [])
+        var importedCount = 0
+        var skippedCount = 0
+
+        for index in 0..<assets.count {
+            let asset = assets.object(at: index)
+            if importedIDs.contains(asset.localIdentifier) {
+                skippedCount += 1
+                continue
+            }
+
+            importProgressText = "Importing \(index + 1) of \(assets.count)"
+
+            do {
+                guard let payload = await originalImageData(for: asset) else {
+                    skippedCount += 1
+                    continue
+                }
+                _ = try TideCamLibraryStorage.save(payload.data, preferredExtension: payload.fileExtension)
+                importedIDs.insert(asset.localIdentifier)
+                importedCount += 1
+            } catch {
+                skippedCount += 1
+            }
+        }
+
+        UserDefaults.standard.set(Array(importedIDs), forKey: importedAssetIDsKey)
+        refresh()
+
+        if importedCount == 0 && skippedCount > 0 {
+            errorMessage = "Nothing new to import. Your accessible Photos library is already in TideCam."
+        }
+    }
+
+    private func requestPhotoLibraryAccess() async -> PHAuthorizationStatus {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard current == .notDetermined else { return current }
+
+        return await withCheckedContinuation { continuation in
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                continuation.resume(returning: status)
+            }
+        }
+    }
+
+    private func originalImageData(for asset: PHAsset) async -> (data: Data, fileExtension: String?)? {
+        await withCheckedContinuation { continuation in
+            let options = PHImageRequestOptions()
+            options.version = .original
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, _ in
+                guard let data else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let ext = uti.flatMap { UTType($0)?.preferredFilenameExtension }
+                continuation.resume(returning: (data, ext))
+            }
+        }
     }
 
     func delete(_ item: TideCamLibraryItem) {
