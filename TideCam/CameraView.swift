@@ -4,6 +4,7 @@ struct CameraView: View {
     @StateObject private var camera = CameraManager()
     @State private var selectedMode: CameraMode = .photo
     @State private var showRecipes = false
+    @State private var showLibrary = false
 
     var body: some View {
         ZStack {
@@ -15,6 +16,7 @@ struct CameraView: View {
             } else { permissionView }
         }
         .sheet(isPresented: $showRecipes) { recipeSheet.presentationDetents([.medium]) }
+        .fullScreenCover(isPresented: $showLibrary) { TideCamLibraryView() }
         .alert("TideCam", isPresented: Binding(get: { camera.errorMessage != nil }, set: { if !$0 { camera.errorMessage = nil } })) {
             Button("OK", role: .cancel) { camera.errorMessage = nil }
         } message: {
@@ -72,16 +74,28 @@ struct CameraView: View {
                 }
 
                 HStack {
-                    Group {
-                        if let image = camera.lastPhoto {
-                            Image(uiImage: image).resizable().scaledToFill()
-                        } else {
-                            Image(systemName: "photo").font(.title3).foregroundStyle(.white.opacity(0.8))
+                    Button { showLibrary = true } label: {
+                        Group {
+                            if let image = camera.lastPhoto {
+                                Image(uiImage: image).resizable().scaledToFill()
+                            } else {
+                                Image(systemName: "photo.on.rectangle.angled").font(.title3).foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                        .frame(width: 54, height: 54)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "chevron.up")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(5)
+                                .background(.black.opacity(0.55), in: Circle())
+                                .offset(x: 3, y: 3)
                         }
                     }
-                    .frame(width: 54, height: 54)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .buttonStyle(.plain)
+                    .disabled(camera.isRecording || camera.isPreparingVideo || camera.isCapturing)
 
                     Spacer()
 
