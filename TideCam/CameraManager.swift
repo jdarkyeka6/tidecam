@@ -125,6 +125,7 @@ final class CameraManager: NSObject, ObservableObject {
         let currentISO = device.iso
         Task { @MainActor in
             self.capabilities = caps
+            if !caps.supportsRAW { self.rawEnabled = false }
             self.iso = min(max(currentISO, caps.minimumISO), caps.maximumISO)
             self.focus = min(max(currentFocus, 0), 1)
         }
@@ -133,13 +134,22 @@ final class CameraManager: NSObject, ObservableObject {
     func capturePhoto() {
         guard isConfigured, !isCapturing, !isRecording, !isPreparingVideo else { return }
         isCapturing = true
+
+        let isRawCapture: Bool
         let settings: AVCapturePhotoSettings
         if rawEnabled, let rawType = photoOutput.availableRawPhotoPixelFormatTypes.first {
+            isRawCapture = true
             settings = AVCapturePhotoSettings(rawPixelFormatType: rawType)
         } else {
+            isRawCapture = false
             settings = AVCapturePhotoSettings()
         }
-        if let device = videoInput?.device, device.hasFlash { settings.flashMode = flashMode.avMode }
+
+        // RAW capture and flash are not a safe combination on every device/format.
+        // Leave flash off for RAW rather than asking AVFoundation for an unsupported capture.
+        if !isRawCapture, let device = videoInput?.device, device.hasFlash {
+            settings.flashMode = flashMode.avMode
+        }
         settings.photoQualityPrioritization = .quality
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
@@ -365,15 +375,40 @@ final class CameraManager: NSObject, ObservableObject {
 
 extension CameraManager: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        if let error { Task { @MainActor in self.errorMessage = error.localizedDescription; self.isCapturing = false }; return }
-        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else { Task { @MainActor in self.isCapturing = false }; return }
+        if let error {
+            Task { @MainActor in self.errorMessage = error.localizedDescription; self.isCapturing = false }
+            return
+        }
+        guard let data = photo.fileDataRepresentation() else {
+            Task { @MainActor in self.isCapturing = false; self.errorMessage = "TideCam couldn't create the captured photo." }
+            return
+        }
+
         Task { @MainActor in
+            if photo.isRawPhoto {
+                // A RAW capture is DNG data. Do not feed it through UIImage first.
+                // PhotoKit can save the DNG directly as a photo resource.
+                self.isCapturing = false
+                self.saveToLibrary(data)
+                return
+            }
+
+            guard let image = UIImage(data: data) else {
+                self.isCapturing = false
+                self.errorMessage = "TideCam couldn't decode the captured photo."
+                return
+            }
+
             if self.detailFramesRemaining > 0 {
                 self.detailFrameData.append(data)
                 self.detailFramesRemaining -= 1
                 self.detailProgress = 1 - (Double(self.detailFramesRemaining) / Double(max(self.detailFramesRequested, 1)))
                 self.captureNextDetailFrame()
-            } else { self.lastPhoto = image; self.isCapturing = false; self.saveToLibrary(data) }
+            } else {
+                self.lastPhoto = image
+                self.isCapturing = false
+                self.saveToLibrary(data)
+            }
         }
     }
 }
