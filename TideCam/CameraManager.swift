@@ -77,6 +77,7 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 self.session.commitConfiguration()
+                self.prepareAutomaticCamera(device)
                 self.session.startRunning()
                 self.publishCapabilities(for: device, supportsVideo: supportsVideo)
                 Task { @MainActor in self.isConfigured = true }
@@ -87,9 +88,26 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    // Pro controls need a physical camera. Virtual triple/dual devices can switch
+    // constituent lenses under us and don't reliably expose manual lens position.
     private func bestDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        let types: [AVCaptureDevice.DeviceType] = position == .back ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera] : [.builtInTrueDepthCamera, .builtInWideAngleCamera]
+        if let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) {
+            return physicalWide
+        }
+        let types: [AVCaptureDevice.DeviceType] = position == .back
+            ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera]
+            : [.builtInTrueDepthCamera]
         return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: position).devices.first
+    }
+
+    private func prepareAutomaticCamera(_ device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
+            device.unlockForConfiguration()
+        } catch { }
     }
 
     private func publishCapabilities(for device: AVCaptureDevice, supportsVideo: Bool? = nil) {
@@ -104,10 +122,11 @@ final class CameraManager: NSObject, ObservableObject {
             maximumISO: device.activeFormat.maxISO
         )
         let currentFocus = device.lensPosition
+        let currentISO = device.iso
         Task { @MainActor in
             self.capabilities = caps
-            self.iso = min(max(100, caps.minimumISO), caps.maximumISO)
-            self.focus = currentFocus
+            self.iso = min(max(currentISO, caps.minimumISO), caps.maximumISO)
+            self.focus = min(max(currentFocus, 0), 1)
         }
     }
 
@@ -170,9 +189,7 @@ final class CameraManager: NSObject, ObservableObject {
                     self.lastPhoto = best.image
                     self.saveToLibrary(best.data)
                     self.detailStatus = "Best frame saved"
-                } else {
-                    self.detailStatus = "Capture failed"
-                }
+                } else { self.detailStatus = "Capture failed" }
                 self.detailFrameData.removeAll()
                 self.detailProgress = 1
                 self.isCapturing = false
@@ -184,13 +201,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func restoreAutomaticCamera() {
         sessionQueue.async { [weak self] in
             guard let device = self?.videoInput?.device else { return }
-            do {
-                try device.lockForConfiguration()
-                if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
-                if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
-                if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
-                device.unlockForConfiguration()
-            } catch { }
+            self?.prepareAutomaticCamera(device)
         }
     }
 
@@ -204,44 +215,46 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setISO(_ value: Float) {
         guard value.isFinite else { return }
-        iso = value
         sessionQueue.async { [weak self] in
-            guard let device = self?.videoInput?.device, device.isExposureModeSupported(.custom) else { return }
+            guard let self, let device = self.videoInput?.device, device.isExposureModeSupported(.custom) else { return }
             do {
                 try device.lockForConfiguration()
                 let clamped = min(max(value, device.activeFormat.minISO), device.activeFormat.maxISO)
-                device.setExposureModeCustom(duration: AVCaptureDevice.currentExposureDuration, iso: clamped)
+                let duration = device.exposureDuration
+                device.setExposureModeCustom(duration: duration, iso: clamped, completionHandler: nil)
                 device.unlockForConfiguration()
-            } catch { }
+                Task { @MainActor in self.iso = clamped }
+            } catch {
+                Task { @MainActor in self.errorMessage = "ISO control failed: \(error.localizedDescription)" }
+            }
         }
     }
 
     func setFocus(_ value: Float) {
         guard value.isFinite else { return }
-        let clamped = min(max(value, 0), 1)
-        focus = clamped
+        let requested = min(max(value, 0), 1)
         sessionQueue.async { [weak self] in
-            guard let device = self?.videoInput?.device,
+            guard let self, let device = self.videoInput?.device,
                   device.isLockingFocusWithCustomLensPositionSupported else { return }
             do {
                 try device.lockForConfiguration()
-                device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
+                device.setFocusModeLocked(lensPosition: requested) { _ in
+                    let actual = device.lensPosition
+                    Task { @MainActor in self.focus = actual }
+                }
                 device.unlockForConfiguration()
-            } catch { }
+                Task { @MainActor in self.focus = requested }
+            } catch {
+                Task { @MainActor in self.errorMessage = "Focus control failed: \(error.localizedDescription)" }
+            }
         }
     }
 
     func toggleVideoRecording() {
-        if isRecording {
-            movieOutput.stopRecording()
-            return
-        }
+        if isRecording { movieOutput.stopRecording(); return }
         guard isConfigured, capabilities.supportsVideo, !isCapturing, !isPreparingVideo else { return }
         isPreparingVideo = true
-        Task {
-            let includeAudio = await requestMicrophoneAccessIfNeeded()
-            beginVideoRecording(includeAudio: includeAudio)
-        }
+        Task { beginVideoRecording(includeAudio: await requestMicrophoneAccessIfNeeded()) }
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
@@ -256,43 +269,26 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard self.session.outputs.contains(where: { $0 === self.movieOutput }) else {
-                Task { @MainActor in
-                    self.isPreparingVideo = false
-                    self.errorMessage = "Video recording is not available on this camera."
-                }
+                Task { @MainActor in self.isPreparingVideo = false; self.errorMessage = "Video recording is not available on this camera." }
                 return
             }
-
             if includeAudio, self.audioInput == nil, let microphone = AVCaptureDevice.default(for: .audio) {
                 do {
                     let input = try AVCaptureDeviceInput(device: microphone)
                     self.session.beginConfiguration()
-                    if self.session.canAddInput(input) {
-                        self.session.addInput(input)
-                        self.audioInput = input
-                    }
+                    if self.session.canAddInput(input) { self.session.addInput(input); self.audioInput = input }
                     self.session.commitConfiguration()
                 } catch { }
             }
-
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("TideCam-\(UUID().uuidString).mov")
-            if let connection = self.movieOutput.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
-                connection.videoRotationAngle = 90
-            }
+            if let connection = self.movieOutput.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
-            Task { @MainActor in
-                self.isPreparingVideo = false
-                self.isRecording = true
-            }
+            Task { @MainActor in self.isPreparingVideo = false; self.isRecording = true }
         }
     }
 
     func cycleFlash() {
-        switch flashMode {
-        case .off: flashMode = .auto
-        case .auto: flashMode = .on
-        case .on: flashMode = .off
-        }
+        switch flashMode { case .off: flashMode = .auto; case .auto: flashMode = .on; case .on: flashMode = .off }
     }
 
     func switchCamera() {
@@ -307,9 +303,11 @@ final class CameraManager: NSObject, ObservableObject {
                 self.session.addInput(newInput)
                 self.videoInput = newInput
                 self.position = newPosition
+                self.prepareAutomaticCamera(device)
                 self.publishCapabilities(for: device)
             } else {
                 self.session.addInput(currentInput)
+                self.videoInput = currentInput
             }
             self.session.commitConfiguration()
         }
@@ -321,11 +319,11 @@ final class CameraManager: NSObject, ObservableObject {
             guard let device = self?.videoInput?.device else { return }
             do {
                 try device.lockForConfiguration()
-                if device.isFocusPointOfInterestSupported {
+                if device.isFocusPointOfInterestSupported && device.isFocusModeSupported(.autoFocus) {
                     device.focusPointOfInterest = devicePoint
                     device.focusMode = .autoFocus
                 }
-                if device.isExposurePointOfInterestSupported {
+                if device.isExposurePointOfInterestSupported && device.isExposureModeSupported(.continuousAutoExposure) {
                     device.exposurePointOfInterest = devicePoint
                     device.exposureMode = .continuousAutoExposure
                 }
@@ -337,25 +335,18 @@ final class CameraManager: NSObject, ObservableObject {
     private func saveToLibrary(_ data: Data) {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else { return }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
-            }
+            PHPhotoLibrary.shared().performChanges { PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil) }
         }
     }
 
     private func saveVideoToLibrary(_ url: URL) {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
-            guard status == .authorized || status == .limited else {
-                try? FileManager.default.removeItem(at: url)
-                return
-            }
+            guard status == .authorized || status == .limited else { try? FileManager.default.removeItem(at: url); return }
             PHPhotoLibrary.shared().performChanges {
                 PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: nil)
             } completionHandler: { success, error in
                 try? FileManager.default.removeItem(at: url)
-                if !success, let error {
-                    Task { @MainActor in self?.errorMessage = error.localizedDescription }
-                }
+                if !success, let error { Task { @MainActor in self?.errorMessage = error.localizedDescription } }
             }
         }
     }
@@ -374,47 +365,28 @@ final class CameraManager: NSObject, ObservableObject {
 
 extension CameraManager: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        if let error {
-            Task { @MainActor in self.errorMessage = error.localizedDescription; self.isCapturing = false }
-            return
-        }
-        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            Task { @MainActor in self.isCapturing = false }
-            return
-        }
+        if let error { Task { @MainActor in self.errorMessage = error.localizedDescription; self.isCapturing = false }; return }
+        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else { Task { @MainActor in self.isCapturing = false }; return }
         Task { @MainActor in
             if self.detailFramesRemaining > 0 {
                 self.detailFrameData.append(data)
                 self.detailFramesRemaining -= 1
                 self.detailProgress = 1 - (Double(self.detailFramesRemaining) / Double(max(self.detailFramesRequested, 1)))
                 self.captureNextDetailFrame()
-            } else {
-                self.lastPhoto = image
-                self.isCapturing = false
-                self.saveToLibrary(data)
-            }
+            } else { self.lastPhoto = image; self.isCapturing = false; self.saveToLibrary(data) }
         }
     }
 }
 
 extension CameraManager: AVCaptureFileOutputRecordingDelegate {
     nonisolated func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, from connections: [AVCaptureConnection]) {
-        Task { @MainActor in
-            self.isPreparingVideo = false
-            self.isRecording = true
-        }
+        Task { @MainActor in self.isPreparingVideo = false; self.isRecording = true }
     }
-
     nonisolated func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         Task { @MainActor in
-            self.isPreparingVideo = false
-            self.isRecording = false
-            if let error {
-                try? FileManager.default.removeItem(at: outputFileURL)
-                self.errorMessage = error.localizedDescription
-            } else {
-                self.saveVideoToLibrary(outputFileURL)
-            }
+            self.isPreparingVideo = false; self.isRecording = false
+            if let error { try? FileManager.default.removeItem(at: outputFileURL); self.errorMessage = error.localizedDescription }
+            else { self.saveVideoToLibrary(outputFileURL) }
         }
     }
 }
