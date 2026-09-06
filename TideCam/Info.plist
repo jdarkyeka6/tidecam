@@ -30,6 +30,8 @@
     <string>TideCam uses the camera to capture photos, video, detail stacks and 3D scans.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>TideCam uses the microphone to record audio with videos.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>TideCam can import photos from your photo library into TideCam Photos.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>TideCam saves the photos and videos you capture to your photo library.</string>
     <key>UILaunchScreen</key>
