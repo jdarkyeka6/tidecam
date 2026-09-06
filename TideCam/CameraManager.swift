@@ -150,7 +150,12 @@ final class CameraManager: NSObject, ObservableObject {
         if !isRawCapture, let device = videoInput?.device, device.hasFlash {
             settings.flashMode = flashMode.avMode
         }
-        settings.photoQualityPrioritization = .quality
+
+        // On RAW settings AVFoundation can abort if photoQualityPrioritization is changed.
+        // Use the RAW settings' supported default and only force quality for processed photos.
+        if !isRawCapture {
+            settings.photoQualityPrioritization = .quality
+        }
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
