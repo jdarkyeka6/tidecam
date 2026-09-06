@@ -1,3 +1,4 @@
+import AVKit
 import PhotosUI
 import SwiftUI
 
@@ -24,7 +25,7 @@ struct TideCamLibraryView: View {
                             .foregroundStyle(.secondary)
                         Text("Your TideCam Library")
                             .font(.title3.bold())
-                        Text("Photos you take in TideCam and photos you import from Apple Photos will appear here.")
+                        Text("Photos and videos you capture in TideCam, plus photos you import from Apple Photos, will appear here.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -138,6 +139,14 @@ private struct TideCamLibraryThumbnail: View {
                         .font(.caption2.bold())
                 }
                 .foregroundStyle(.white)
+            } else if item.isVideo {
+                VStack(spacing: 5) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.title2)
+                    Text("VIDEO")
+                        .font(.caption2.bold())
+                }
+                .foregroundStyle(.white)
             } else if let image = UIImage(contentsOfFile: item.url.path) {
                 Image(uiImage: image)
                     .resizable()
@@ -173,6 +182,9 @@ private struct TideCamPhotoViewer: View {
                             .padding(.horizontal, 40)
                     }
                     .foregroundStyle(.white)
+                } else if item.isVideo {
+                    VideoPlayer(player: AVPlayer(url: item.url))
+                        .ignoresSafeArea(edges: .bottom)
                 } else if let image = UIImage(contentsOfFile: item.url.path) {
                     Image(uiImage: image)
                         .resizable()
