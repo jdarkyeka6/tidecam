@@ -1,5 +1,4 @@
 import AVFoundation
-import Photos
 import SwiftUI
 
 @MainActor
@@ -347,25 +346,16 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {
             errorMessage = "TideCam library save failed: \(error.localizedDescription)"
         }
-
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized || status == .limited else { return }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
-            }
-        }
     }
 
     private func saveVideoToLibrary(_ url: URL) {
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
-            guard status == .authorized || status == .limited else { try? FileManager.default.removeItem(at: url); return }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: nil)
-            } completionHandler: { success, error in
-                try? FileManager.default.removeItem(at: url)
-                if !success, let error { Task { @MainActor in self?.errorMessage = error.localizedDescription } }
-            }
+        do {
+            _ = try TideCamLibraryStorage.saveFile(from: url, preferredExtension: "mov")
+            TideCamLibraryStore.shared.refresh()
+        } catch {
+            errorMessage = "TideCam video save failed: \(error.localizedDescription)"
         }
+        try? FileManager.default.removeItem(at: url)
     }
 
     enum CameraError: LocalizedError {
