@@ -1,4 +1,5 @@
 import AVFoundation
+import Photos
 import SwiftUI
 
 @MainActor
@@ -378,22 +379,63 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func saveToLibrary(_ data: Data, preferredExtension: String? = nil) {
-        do {
-            _ = try TideCamLibraryStorage.save(data, preferredExtension: preferredExtension)
-            TideCamLibraryStore.shared.refresh()
-        } catch {
-            errorMessage = "TideCam library save failed: \(error.localizedDescription)"
+        Task {
+            let granted = await requestPhotoLibraryAddAccess()
+            guard granted else {
+                self.errorMessage = "Allow TideCam to add photos in Settings so captures appear in TideLibrary."
+                return
+            }
+
+            do {
+                try await PHPhotoLibrary.shared().performChanges {
+                    let request = PHAssetCreationRequest.forAsset()
+                    let options = PHAssetResourceCreationOptions()
+                    if let preferredExtension {
+                        options.originalFilename = "TideCam-\(UUID().uuidString).\(preferredExtension)"
+                    }
+                    request.addResource(with: .photo, data: data, options: options)
+                }
+            } catch {
+                self.errorMessage = "Photo library save failed: \(error.localizedDescription)"
+            }
         }
     }
 
     private func saveVideoToLibrary(_ url: URL) {
-        do {
-            _ = try TideCamLibraryStorage.saveFile(from: url, preferredExtension: "mov")
-            TideCamLibraryStore.shared.refresh()
-        } catch {
-            errorMessage = "TideCam video save failed: \(error.localizedDescription)"
+        Task {
+            let granted = await requestPhotoLibraryAddAccess()
+            guard granted else {
+                self.errorMessage = "Allow TideCam to add photos in Settings so videos appear in TideLibrary."
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+
+            do {
+                try await PHPhotoLibrary.shared().performChanges {
+                    let request = PHAssetCreationRequest.forAsset()
+                    let options = PHAssetResourceCreationOptions()
+                    options.shouldMoveFile = true
+                    options.originalFilename = "TideCam-\(UUID().uuidString).mov"
+                    request.addResource(with: .video, fileURL: url, options: options)
+                }
+            } catch {
+                self.errorMessage = "Photo library video save failed: \(error.localizedDescription)"
+                try? FileManager.default.removeItem(at: url)
+            }
         }
-        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func requestPhotoLibraryAddAccess() async -> Bool {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        switch status {
+        case .authorized, .limited:
+            return true
+        case .notDetermined:
+            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            return newStatus == .authorized || newStatus == .limited
+        default:
+            return false
+        }
     }
 
     enum CameraError: LocalizedError {
