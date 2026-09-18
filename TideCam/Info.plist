@@ -31,7 +31,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>TideCam uses the microphone to record audio with videos.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>TideCam can import photos from your photo library into TideCam Photos.</string>
+    <string>TideLibrary displays your Apple Photos library without copying the whole library into TideCam. Media is loaded only when needed for browsing or viewing.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>TideCam saves the photos and videos you capture to your photo library.</string>
     <key>UILaunchScreen</key>

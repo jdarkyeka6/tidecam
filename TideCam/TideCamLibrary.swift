@@ -1,9 +1,35 @@
 import Foundation
 import ImageIO
 import Photos
-import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+
+enum TideLibrarySource: String, CaseIterable, Identifiable {
+    case all
+    case tideCam
+    case applePhotos
+    case googleDrive
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .tideCam: return "TideCam"
+        case .applePhotos: return "Photos"
+        case .googleDrive: return "Drive"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .tideCam: return "camera.fill"
+        case .applePhotos: return "apple.logo"
+        case .googleDrive: return "externaldrive.fill"
+        }
+    }
+}
 
 struct TideCamLibraryItem: Identifiable, Hashable {
     let url: URL
@@ -15,6 +41,36 @@ struct TideCamLibraryItem: Identifiable, Hashable {
     }
     var createdAt: Date {
         (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+    }
+}
+
+struct TidePhotoAsset: Identifiable, Hashable {
+    let id: String
+    let createdAt: Date
+    let mediaType: PHAssetMediaType
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let duration: TimeInterval
+
+    var isVideo: Bool { mediaType == .video }
+}
+
+enum TideLibraryEntry: Identifiable, Hashable {
+    case tideCam(TideCamLibraryItem)
+    case applePhotos(TidePhotoAsset)
+
+    var id: String {
+        switch self {
+        case .tideCam(let item): return "tidecam:\(item.id)"
+        case .applePhotos(let asset): return "photos:\(asset.id)"
+        }
+    }
+
+    var createdAt: Date {
+        switch self {
+        case .tideCam(let item): return item.createdAt
+        case .applePhotos(let asset): return asset.createdAt
+        }
     }
 }
 
@@ -64,13 +120,39 @@ final class TideCamLibraryStore: ObservableObject {
     static let shared = TideCamLibraryStore()
 
     @Published private(set) var items: [TideCamLibraryItem] = []
-    @Published var isImporting = false
-    @Published var importProgressText: String?
+    @Published private(set) var photoAssets: [TidePhotoAsset] = []
+    @Published private(set) var allEntries: [TideLibraryEntry] = []
+    @Published private(set) var photoAuthorizationStatus: PHAuthorizationStatus
     @Published var errorMessage: String?
 
-    private let importedAssetIDsKey = "TideCamImportedPhotoAssetIDs"
+    private init() {
+        photoAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        refresh()
+        if canReadApplePhotos {
+            refreshApplePhotos()
+        }
+    }
 
-    private init() { refresh() }
+    var canReadApplePhotos: Bool {
+        photoAuthorizationStatus == .authorized || photoAuthorizationStatus == .limited
+    }
+
+    var photoAccessDenied: Bool {
+        photoAuthorizationStatus == .denied || photoAuthorizationStatus == .restricted
+    }
+
+    func entries(for source: TideLibrarySource) -> [TideLibraryEntry] {
+        switch source {
+        case .all:
+            return allEntries
+        case .tideCam:
+            return items.map(TideLibraryEntry.tideCam)
+        case .applePhotos:
+            return photoAssets.map(TideLibraryEntry.applePhotos)
+        case .googleDrive:
+            return []
+        }
+    }
 
     func refresh() {
         do {
@@ -83,116 +165,66 @@ final class TideCamLibraryStore: ObservableObject {
             items = urls
                 .map(TideCamLibraryItem.init(url:))
                 .sorted { $0.createdAt > $1.createdAt }
+            rebuildCombinedEntries()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func importFromPhotos(_ selections: [PhotosPickerItem]) async {
-        guard !selections.isEmpty else { return }
-        isImporting = true
-        importProgressText = "Importing selected photos…"
-        defer {
-            isImporting = false
-            importProgressText = nil
+    func ensurePhotoLibraryAccess() async {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        let resolved: PHAuthorizationStatus
+
+        if current == .notDetermined {
+            resolved = await withCheckedContinuation { continuation in
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                    continuation.resume(returning: status)
+                }
+            }
+        } else {
+            resolved = current
         }
 
-        for selection in selections {
-            do {
-                guard let data = try await selection.loadTransferable(type: Data.self) else { continue }
-                let ext = selection.supportedContentTypes.first?.preferredFilenameExtension
-                _ = try TideCamLibraryStorage.save(data, preferredExtension: ext)
-            } catch {
-                errorMessage = "Import failed: \(error.localizedDescription)"
-            }
+        photoAuthorizationStatus = resolved
+
+        if canReadApplePhotos {
+            refreshApplePhotos()
+        } else {
+            photoAssets = []
+            rebuildCombinedEntries()
         }
-        refresh()
     }
 
-    func importAllPhotos() async {
-        guard !isImporting else { return }
-        isImporting = true
-        importProgressText = "Requesting Photos access…"
-        defer {
-            isImporting = false
-            importProgressText = nil
-        }
-
-        let status = await requestPhotoLibraryAccess()
-        guard status == .authorized || status == .limited else {
-            errorMessage = "TideCam needs Photos access to import your library."
+    func refreshApplePhotos() {
+        guard canReadApplePhotos else {
+            photoAssets = []
+            rebuildCombinedEntries()
             return
         }
 
         let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        let assets = PHAsset.fetchAssets(with: .image, options: options)
-        guard assets.count > 0 else {
-            importProgressText = "No photos found"
-            return
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+
+        let result = PHAsset.fetchAssets(with: options)
+        var fetched: [TidePhotoAsset] = []
+        fetched.reserveCapacity(result.count)
+
+        result.enumerateObjects { asset, _, _ in
+            guard asset.mediaType == .image || asset.mediaType == .video else { return }
+            fetched.append(
+                TidePhotoAsset(
+                    id: asset.localIdentifier,
+                    createdAt: asset.creationDate ?? .distantPast,
+                    mediaType: asset.mediaType,
+                    pixelWidth: asset.pixelWidth,
+                    pixelHeight: asset.pixelHeight,
+                    duration: asset.duration
+                )
+            )
         }
 
-        var importedIDs = Set(UserDefaults.standard.stringArray(forKey: importedAssetIDsKey) ?? [])
-        var importedCount = 0
-        var skippedCount = 0
-
-        for index in 0..<assets.count {
-            let asset = assets.object(at: index)
-            if importedIDs.contains(asset.localIdentifier) {
-                skippedCount += 1
-                continue
-            }
-
-            importProgressText = "Importing \(index + 1) of \(assets.count)"
-
-            do {
-                guard let payload = await originalImageData(for: asset) else {
-                    skippedCount += 1
-                    continue
-                }
-                _ = try TideCamLibraryStorage.save(payload.data, preferredExtension: payload.fileExtension)
-                importedIDs.insert(asset.localIdentifier)
-                importedCount += 1
-            } catch {
-                skippedCount += 1
-            }
-        }
-
-        UserDefaults.standard.set(Array(importedIDs), forKey: importedAssetIDsKey)
-        refresh()
-
-        if importedCount == 0 && skippedCount > 0 {
-            errorMessage = "Nothing new to import. Your accessible Photos library is already in TideCam."
-        }
-    }
-
-    private func requestPhotoLibraryAccess() async -> PHAuthorizationStatus {
-        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard current == .notDetermined else { return current }
-
-        return await withCheckedContinuation { continuation in
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-                continuation.resume(returning: status)
-            }
-        }
-    }
-
-    private func originalImageData(for asset: PHAsset) async -> (data: Data, fileExtension: String?)? {
-        await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.version = .original
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, _ in
-                guard let data else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let ext = uti.flatMap { UTType($0)?.preferredFilenameExtension }
-                continuation.resume(returning: (data, ext))
-            }
-        }
+        photoAssets = fetched
+        rebuildCombinedEntries()
     }
 
     func delete(_ item: TideCamLibraryItem) {
@@ -202,5 +234,11 @@ final class TideCamLibraryStore: ObservableObject {
         } catch {
             errorMessage = "Delete failed: \(error.localizedDescription)"
         }
+    }
+
+    private func rebuildCombinedEntries() {
+        let local = items.map(TideLibraryEntry.tideCam)
+        let photos = photoAssets.map(TideLibraryEntry.applePhotos)
+        allEntries = (local + photos).sorted { $0.createdAt > $1.createdAt }
     }
 }
