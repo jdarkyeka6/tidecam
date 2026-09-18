@@ -22,6 +22,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var rawEnabled = false
     @Published var iso: Float = 100
     @Published var focus: Float = 0.5
+    @Published var zoomFactor: CGFloat = 1
+    @Published var minimumZoomFactor: CGFloat = 1
+    @Published var maximumZoomFactor: CGFloat = 1
     @Published var detailProgress: Double = 0
     @Published var detailStatus = "Ready"
     @Published var detailFrameCount = 12
@@ -120,11 +123,46 @@ final class CameraManager: NSObject, ObservableObject {
         )
         let currentFocus = device.lensPosition
         let currentISO = device.iso
+        let minZoom = max(device.minAvailableVideoZoomFactor, 1)
+        let maxZoom = min(device.maxAvailableVideoZoomFactor, 10)
+        let currentZoom = min(max(device.videoZoomFactor, minZoom), maxZoom)
         Task { @MainActor in
             self.capabilities = caps
             if !caps.supportsRAW { self.rawEnabled = false }
             self.iso = min(max(currentISO, caps.minimumISO), caps.maximumISO)
             self.focus = min(max(currentFocus, 0), 1)
+            self.minimumZoomFactor = minZoom
+            self.maximumZoomFactor = maxZoom
+            self.zoomFactor = currentZoom
+        }
+    }
+
+    func setZoom(_ value: CGFloat, smoothly: Bool = false) {
+        guard value.isFinite else { return }
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoInput?.device else { return }
+            let minimum = max(device.minAvailableVideoZoomFactor, 1)
+            let maximum = min(device.maxAvailableVideoZoomFactor, 10)
+            let clamped = min(max(value, minimum), maximum)
+            do {
+                try device.lockForConfiguration()
+                if smoothly {
+                    device.ramp(toVideoZoomFactor: clamped, withRate: 8)
+                } else {
+                    device.cancelVideoZoomRamp()
+                    device.videoZoomFactor = clamped
+                }
+                device.unlockForConfiguration()
+                Task { @MainActor in
+                    self.minimumZoomFactor = minimum
+                    self.maximumZoomFactor = maximum
+                    self.zoomFactor = clamped
+                }
+            } catch {
+                Task { @MainActor in
+                    self.errorMessage = "Zoom control failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
