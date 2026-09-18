@@ -13,7 +13,7 @@ concurrency:
   group: tidecam-testflight
   cancel-in-progress: false
 
-# Trigger 4: deploy TideCam-only capture storage build.
+# Trigger 5: deploy TideLibrary build.
 jobs:
   build:
     runs-on: macos-15
