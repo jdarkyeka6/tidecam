@@ -10,7 +10,13 @@ struct CameraView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if camera.isAuthorized {
-                CameraPreview(session: camera.session, onFocus: camera.focus).ignoresSafeArea()
+                CameraPreview(
+                    session: camera.session,
+                    onFocus: camera.focus,
+                    onZoom: { camera.setZoom($0) },
+                    currentZoom: camera.zoomFactor
+                )
+                .ignoresSafeArea()
                 LinearGradient(colors: [.black.opacity(0.58), .clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom).ignoresSafeArea().allowsHitTesting(false)
                 controls
             } else { permissionView }
@@ -50,6 +56,30 @@ struct CameraView: View {
             .padding(.top, 8)
 
             Spacer()
+
+            if camera.maximumZoomFactor > camera.minimumZoomFactor {
+                HStack(spacing: 10) {
+                    ForEach(zoomPresets, id: \.self) { factor in
+                        Button {
+                            camera.setZoom(factor, smoothly: true)
+                        } label: {
+                            Text(zoomLabel(factor))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(abs(camera.zoomFactor - factor) < 0.08 ? .black : .white)
+                                .frame(width: 44, height: 34)
+                                .background(
+                                    abs(camera.zoomFactor - factor) < 0.08 ? Color.yellow : Color.black.opacity(0.48),
+                                    in: Capsule()
+                                )
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.bottom, 12)
+            }
+
             if selectedMode == .pro { proPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .detail { detailPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .video { videoPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
@@ -228,6 +258,24 @@ struct CameraView: View {
             }
             .navigationTitle("Camera Recipes")
         }
+    }
+
+    private var zoomPresets: [CGFloat] {
+        let candidates: [CGFloat] = [1, 2, 3, 5]
+        var values = candidates.filter {
+            $0 >= camera.minimumZoomFactor && $0 <= camera.maximumZoomFactor
+        }
+        if !values.contains(where: { abs($0 - camera.minimumZoomFactor) < 0.01 }) {
+            values.insert(camera.minimumZoomFactor, at: 0)
+        }
+        return Array(values.prefix(5))
+    }
+
+    private func zoomLabel(_ factor: CGFloat) -> String {
+        if abs(factor.rounded() - factor) < 0.01 {
+            return "\(Int(factor))×"
+        }
+        return String(format: "%.1f×", factor)
     }
 
     private func shutter() {
