@@ -261,7 +261,7 @@ struct CameraView: View {
     }
 
     private var zoomPresets: [CGFloat] {
-        let candidates: [CGFloat] = [1, 2, 3, 5]
+        let candidates: [CGFloat] = [0.5, 1, 2, 3, 5]
         var values = candidates.filter {
             $0 >= camera.minimumZoomFactor && $0 <= camera.maximumZoomFactor
         }
