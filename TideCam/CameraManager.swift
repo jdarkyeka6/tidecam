@@ -92,13 +92,38 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func bestDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        if let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) {
-            return physicalWide
-        }
+        // Prefer Apple's virtual multi-camera devices on the rear camera. These let
+        // AVFoundation switch between Ultra Wide / Wide / Telephoto while zooming.
+        // Falling back to the physical wide camera is important for devices that do
+        // not expose a virtual camera.
         let types: [AVCaptureDevice.DeviceType] = position == .back
-            ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera]
-            : [.builtInTrueDepthCamera]
-        return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: position).devices.first
+            ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera]
+            : [.builtInTrueDepthCamera, .builtInWideAngleCamera]
+
+        return AVCaptureDevice.DiscoverySession(
+            deviceTypes: types,
+            mediaType: .video,
+            position: position
+        ).devices.first
+    }
+
+    /// Converts AVFoundation's virtual-camera zoom scale into the familiar Camera
+    /// app scale where the main Wide lens is 1x (and Ultra Wide is typically 0.5x).
+    private func wideReferenceZoomFactor(for device: AVCaptureDevice) -> CGFloat {
+        guard device.isVirtualDevice else { return 1 }
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+        // On a multi-camera device the first switch-over is the point where the
+        // Wide lens becomes active. If there is no switch-over, use AVFoundation's
+        // neutral scale.
+        return max(switchOvers.first ?? 1, 1)
+    }
+
+    private func displayZoomRange(for device: AVCaptureDevice) -> (minimum: CGFloat, maximum: CGFloat, current: CGFloat) {
+        let reference = wideReferenceZoomFactor(for: device)
+        let minimum = device.minAvailableVideoZoomFactor / reference
+        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
+        let current = min(max(device.videoZoomFactor / reference, minimum), maximum)
+        return (minimum, maximum, current)
     }
 
     private func prepareAutomaticCamera(_ device: AVCaptureDevice) {
@@ -124,9 +149,10 @@ final class CameraManager: NSObject, ObservableObject {
         )
         let currentFocus = device.lensPosition
         let currentISO = device.iso
-        let minZoom = max(device.minAvailableVideoZoomFactor, 1)
-        let maxZoom = min(device.maxAvailableVideoZoomFactor, 10)
-        let currentZoom = min(max(device.videoZoomFactor, minZoom), maxZoom)
+        let zoomRange = displayZoomRange(for: device)
+        let minZoom = zoomRange.minimum
+        let maxZoom = zoomRange.maximum
+        let currentZoom = zoomRange.current
         Task { @MainActor in
             self.capabilities = caps
             if !caps.supportsRAW { self.rawEnabled = false }
@@ -142,16 +168,21 @@ final class CameraManager: NSObject, ObservableObject {
         guard value.isFinite else { return }
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoInput?.device else { return }
-            let minimum = max(device.minAvailableVideoZoomFactor, 1)
-            let maximum = min(device.maxAvailableVideoZoomFactor, 10)
+            let reference = self.wideReferenceZoomFactor(for: device)
+            let minimum = device.minAvailableVideoZoomFactor / reference
+            let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
             let clamped = min(max(value, minimum), maximum)
+            let hardwareZoom = min(
+                max(clamped * reference, device.minAvailableVideoZoomFactor),
+                device.maxAvailableVideoZoomFactor
+            )
             do {
                 try device.lockForConfiguration()
                 if smoothly {
-                    device.ramp(toVideoZoomFactor: clamped, withRate: 8)
+                    device.ramp(toVideoZoomFactor: hardwareZoom, withRate: 8)
                 } else {
                     device.cancelVideoZoomRamp()
-                    device.videoZoomFactor = clamped
+                    device.videoZoomFactor = hardwareZoom
                 }
                 device.unlockForConfiguration()
                 Task { @MainActor in
