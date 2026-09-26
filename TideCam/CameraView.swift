@@ -57,7 +57,7 @@ struct CameraView: View {
 
             Spacer()
 
-            if camera.maximumZoomFactor > camera.minimumZoomFactor {
+            if camera.nativeZoomFactors.count > 1 {
                 HStack(spacing: 10) {
                     ForEach(zoomPresets, id: \.self) { factor in
                         Button {
@@ -261,14 +261,10 @@ struct CameraView: View {
     }
 
     private var zoomPresets: [CGFloat] {
-        let candidates: [CGFloat] = [0.5, 1, 2, 3, 5]
-        var values = candidates.filter {
-            $0 >= camera.minimumZoomFactor && $0 <= camera.maximumZoomFactor
-        }
-        if !values.contains(where: { abs($0 - camera.minimumZoomFactor) < 0.01 }) {
-            values.insert(camera.minimumZoomFactor, at: 0)
-        }
-        return Array(values.prefix(5))
+        camera.nativeZoomFactors
+            .filter { $0 >= camera.minimumZoomFactor && $0 <= camera.maximumZoomFactor }
+            .prefix(5)
+            .map { $0 }
     }
 
     private func zoomLabel(_ factor: CGFloat) -> String {
