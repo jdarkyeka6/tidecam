@@ -26,6 +26,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var zoomFactor: CGFloat = 1
     @Published var minimumZoomFactor: CGFloat = 1
     @Published var maximumZoomFactor: CGFloat = 1
+    @Published var nativeZoomFactors: [CGFloat] = [1]
     @Published var detailProgress: Double = 0
     @Published var detailStatus = "Ready"
     @Published var detailFrameCount = 12
@@ -71,7 +72,7 @@ final class CameraManager: NSObject, ObservableObject {
 
                 guard self.session.canAddOutput(self.photoOutput) else { throw CameraError.cannotAddOutput }
                 self.session.addOutput(self.photoOutput)
-                self.photoOutput.maxPhotoQualityPrioritization = .quality
+                self.configurePhotoOutputForMaximumQuality(device)
 
                 var supportsVideo = false
                 if self.session.canAddOutput(self.movieOutput) {
@@ -108,14 +109,67 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// Converts AVFoundation's virtual-camera zoom scale into the familiar Camera
-    /// app scale where the main Wide lens is 1x (and Ultra Wide is typically 0.5x).
+    /// app scale where the physical Wide camera is 1x. Finding the Wide camera's
+    /// actual constituent index avoids inventing a fake 0.5x on Wide + Tele devices.
     private func wideReferenceZoomFactor(for device: AVCaptureDevice) -> CGFloat {
         guard device.isVirtualDevice else { return 1 }
+
+        let constituents = device.constituentDevices
+        guard let wideIndex = constituents.firstIndex(where: { $0.deviceType == .builtInWideAngleCamera }) else {
+            return 1
+        }
+        guard wideIndex > 0 else { return 1 }
+
         let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
-        // On a multi-camera device the first switch-over is the point where the
-        // Wide lens becomes active. If there is no switch-over, use AVFoundation's
-        // neutral scale.
-        return max(switchOvers.first ?? 1, 1)
+        let switchIndex = wideIndex - 1
+        guard switchIndex < switchOvers.count else { return 1 }
+        return max(switchOvers[switchIndex], 1)
+    }
+
+    /// Returns the native lens buttons for this exact phone. On a typical triple
+    /// camera this becomes 0.5x / 1x / 2x, 3x or 5x depending on the telephoto lens.
+    /// Digital zoom remains available by pinching, but quick buttons represent real
+    /// constituent cameras rather than hard-coded guesses.
+    private func nativeDisplayZoomFactors(for device: AVCaptureDevice) -> [CGFloat] {
+        let reference = wideReferenceZoomFactor(for: device)
+        let minimum = device.minAvailableVideoZoomFactor / reference
+        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
+
+        guard device.isVirtualDevice else {
+            return [1].filter { $0 >= minimum && $0 <= maximum }
+        }
+
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+        let constituents = device.constituentDevices
+        var factors: [CGFloat] = []
+
+        for index in constituents.indices {
+            let hardwareFactor: CGFloat
+            if index == 0 {
+                hardwareFactor = 1
+            } else if index - 1 < switchOvers.count {
+                hardwareFactor = switchOvers[index - 1]
+            } else {
+                continue
+            }
+
+            let displayFactor = hardwareFactor / reference
+            if displayFactor >= minimum - 0.01 && displayFactor <= maximum + 0.01 {
+                factors.append(displayFactor)
+            }
+        }
+
+        if !factors.contains(where: { abs($0 - 1) < 0.01 }),
+           1 >= minimum, 1 <= maximum {
+            factors.append(1)
+        }
+
+        let sorted = factors.sorted()
+        return sorted.reduce(into: [CGFloat]()) { result, factor in
+            if !result.contains(where: { abs($0 - factor) < 0.01 }) {
+                result.append(factor)
+            }
+        }
     }
 
     private func displayZoomRange(for device: AVCaptureDevice) -> (minimum: CGFloat, maximum: CGFloat, current: CGFloat) {
@@ -124,6 +178,52 @@ final class CameraManager: NSObject, ObservableObject {
         let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
         let current = min(max(device.videoZoomFactor / reference, minimum), maximum)
         return (minimum, maximum, current)
+    }
+
+    private func largestPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
+        device.activeFormat.supportedMaxPhotoDimensions.max {
+            Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height)
+        }
+    }
+
+    /// Configure the expensive parts of the still-photo pipeline once, before the
+    /// session starts (and again when the physical camera input changes).
+    private func configurePhotoOutputForMaximumQuality(_ device: AVCaptureDevice) {
+        photoOutput.maxPhotoQualityPrioritization = .quality
+
+        if let dimensions = largestPhotoDimensions(for: device) {
+            photoOutput.maxPhotoDimensions = dimensions
+        }
+
+        if photoOutput.isAppleProRAWSupported {
+            photoOutput.isAppleProRAWEnabled = true
+        }
+
+        if photoOutput.isContentAwareDistortionCorrectionSupported {
+            photoOutput.isContentAwareDistortionCorrectionEnabled = true
+        }
+    }
+
+    private func applyMaximumPhotoDimensions(to settings: AVCapturePhotoSettings) {
+        let dimensions = photoOutput.maxPhotoDimensions
+        guard dimensions.width > 0, dimensions.height > 0 else { return }
+        settings.maxPhotoDimensions = dimensions
+    }
+
+    private func makeProcessedPhotoSettings() -> AVCapturePhotoSettings {
+        if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+            return AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+        }
+        return AVCapturePhotoSettings()
+    }
+
+    private func preferredRawPixelFormatType() -> OSType? {
+        let formats = photoOutput.availableRawPhotoPixelFormatTypes
+        if photoOutput.isAppleProRAWEnabled,
+           let proRAW = formats.first(where: { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }) {
+            return proRAW
+        }
+        return formats.first
     }
 
     private func prepareAutomaticCamera(_ device: AVCaptureDevice) {
@@ -153,6 +253,7 @@ final class CameraManager: NSObject, ObservableObject {
         let minZoom = zoomRange.minimum
         let maxZoom = zoomRange.maximum
         let currentZoom = zoomRange.current
+        let nativeZooms = nativeDisplayZoomFactors(for: device)
         Task { @MainActor in
             self.capabilities = caps
             if !caps.supportsRAW { self.rawEnabled = false }
@@ -161,6 +262,7 @@ final class CameraManager: NSObject, ObservableObject {
             self.minimumZoomFactor = minZoom
             self.maximumZoomFactor = maxZoom
             self.zoomFactor = currentZoom
+            self.nativeZoomFactors = nativeZooms
         }
     }
 
@@ -204,20 +306,29 @@ final class CameraManager: NSObject, ObservableObject {
 
         let isRawCapture: Bool
         let settings: AVCapturePhotoSettings
-        if rawEnabled, let rawType = photoOutput.availableRawPhotoPixelFormatTypes.first {
+        if rawEnabled, let rawType = preferredRawPixelFormatType() {
             isRawCapture = true
             settings = AVCapturePhotoSettings(rawPixelFormatType: rawType)
         } else {
             isRawCapture = false
-            settings = AVCapturePhotoSettings()
+            settings = makeProcessedPhotoSettings()
         }
 
-        if !isRawCapture, let device = videoInput?.device, device.hasFlash {
-            settings.flashMode = flashMode.avMode
-        }
+        applyMaximumPhotoDimensions(to: settings)
+        settings.photoQualityPrioritization = .quality
+
         if !isRawCapture {
-            settings.photoQualityPrioritization = .quality
+            if let device = videoInput?.device, device.hasFlash {
+                settings.flashMode = flashMode.avMode
+            }
+            if photoOutput.isAutoRedEyeReductionSupported {
+                settings.isAutoRedEyeReductionEnabled = true
+            }
+            if photoOutput.isContentAwareDistortionCorrectionSupported {
+                settings.isAutoContentAwareDistortionCorrectionEnabled = true
+            }
         }
+
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
@@ -250,8 +361,12 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func captureNextDetailFrame() {
         guard detailFramesRemaining > 0 else { finishDetailBurst(); return }
-        let settings = AVCapturePhotoSettings()
-        settings.photoQualityPrioritization = .speed
+        let settings = makeProcessedPhotoSettings()
+        applyMaximumPhotoDimensions(to: settings)
+        settings.photoQualityPrioritization = .balanced
+        if photoOutput.isContentAwareDistortionCorrectionSupported {
+            settings.isAutoContentAwareDistortionCorrectionEnabled = true
+        }
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
@@ -380,6 +495,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.session.addInput(newInput)
                 self.videoInput = newInput
                 self.position = newPosition
+                self.configurePhotoOutputForMaximumQuality(device)
                 self.prepareAutomaticCamera(device)
                 self.publishCapabilities(for: device)
             } else {
