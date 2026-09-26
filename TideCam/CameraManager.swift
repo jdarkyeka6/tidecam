@@ -14,6 +14,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isAuthorized = false
     @Published var isConfigured = false
     @Published var isCapturing = false
+    @Published var isBursting = false
+    @Published var burstCount = 0
     @Published var isRecording = false
     @Published var isPreparingVideo = false
     @Published var flashMode: FlashMode = .auto
@@ -42,6 +44,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var detailFramesRemaining = 0
     private var detailFramesRequested = 0
     private var detailFrameData: [Data] = []
+    private var burstRequested = false
+    private let maximumBurstCount = 200
 
     override init() { super.init(); Task { await requestPermissionAndConfigure() } }
 
@@ -199,6 +203,14 @@ final class CameraManager: NSObject, ObservableObject {
             photoOutput.isAppleProRAWEnabled = true
         }
 
+        if photoOutput.isResponsiveCaptureSupported {
+            photoOutput.isResponsiveCaptureEnabled = true
+        }
+
+        if photoOutput.isFastCapturePrioritizationSupported {
+            photoOutput.isFastCapturePrioritizationEnabled = true
+        }
+
         if photoOutput.isContentAwareDistortionCorrectionSupported {
             photoOutput.isContentAwareDistortionCorrectionEnabled = true
         }
@@ -329,6 +341,36 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
+        photoOutput.capturePhoto(with: settings, delegate: self)
+    }
+
+    /// Hold-to-shoot burst. Burst deliberately captures processed HEIF/JPEG frames
+    /// with speed prioritization so the camera can keep firing instead of waiting
+    /// for the heavier single-shot quality pipeline between every frame.
+    func beginBurst() {
+        guard isConfigured, !isCapturing, !isRecording, !isPreparingVideo else { return }
+        burstRequested = true
+        burstCount = 0
+        isBursting = true
+        isCapturing = true
+        captureNextBurstFrame()
+    }
+
+    func endBurst() {
+        burstRequested = false
+    }
+
+    private func captureNextBurstFrame() {
+        guard burstRequested, burstCount < maximumBurstCount else {
+            burstRequested = false
+            isBursting = false
+            isCapturing = false
+            return
+        }
+
+        let settings = makeProcessedPhotoSettings()
+        applyMaximumPhotoDimensions(to: settings)
+        settings.photoQualityPrioritization = .speed
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
@@ -600,7 +642,12 @@ final class CameraManager: NSObject, ObservableObject {
 extension CameraManager: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error {
-            Task { @MainActor in self.errorMessage = error.localizedDescription; self.isCapturing = false }
+            Task { @MainActor in
+                self.errorMessage = error.localizedDescription
+                self.burstRequested = false
+                self.isBursting = false
+                self.isCapturing = false
+            }
             return
         }
         guard let data = photo.fileDataRepresentation() else {
@@ -626,6 +673,18 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
                 self.detailFramesRemaining -= 1
                 self.detailProgress = 1 - (Double(self.detailFramesRemaining) / Double(max(self.detailFramesRequested, 1)))
                 self.captureNextDetailFrame()
+            } else if self.isBursting {
+                self.lastPhoto = image
+                self.burstCount += 1
+                self.saveToLibrary(data)
+
+                if self.burstRequested && self.burstCount < self.maximumBurstCount {
+                    self.captureNextBurstFrame()
+                } else {
+                    self.burstRequested = false
+                    self.isBursting = false
+                    self.isCapturing = false
+                }
             } else {
                 self.lastPhoto = image
                 self.isCapturing = false
