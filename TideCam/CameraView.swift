@@ -5,6 +5,7 @@ struct CameraView: View {
     @State private var selectedMode: CameraMode = .photo
     @State private var showRecipes = false
     @State private var showLibrary = false
+    @State private var burstGestureTriggered = false
 
     var body: some View {
         ZStack {
@@ -129,12 +130,32 @@ struct CameraView: View {
 
                     Spacer()
 
-                    Button(action: shutter) {
+                    Button {
+                        guard !burstGestureTriggered else { return }
+                        shutter()
+                    } label: {
                         ZStack {
                             Circle().stroke(.white, lineWidth: 4).frame(width: 78, height: 78)
                             shutterFill
                         }
                     }
+                    .onLongPressGesture(
+                        minimumDuration: 0.28,
+                        maximumDistance: 50,
+                        pressing: { pressing in
+                            if !pressing, burstGestureTriggered {
+                                camera.endBurst()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                    burstGestureTriggered = false
+                                }
+                            }
+                        },
+                        perform: {
+                            guard burstEligible, !shutterDisabled else { return }
+                            burstGestureTriggered = true
+                            camera.beginBurst()
+                        }
+                    )
                     .disabled(shutterDisabled)
 
                     Spacer()
@@ -158,16 +179,28 @@ struct CameraView: View {
             } else {
                 Circle().fill(.red).frame(width: camera.isPreparingVideo ? 58 : 66, height: camera.isPreparingVideo ? 58 : 66)
             }
+        } else if camera.isBursting {
+            ZStack {
+                Circle().fill(.yellow).frame(width: 58, height: 58)
+                Text("\(camera.burstCount)")
+                    .font(.system(size: 17, weight: .black, design: .rounded))
+                    .foregroundStyle(.black)
+                    .monospacedDigit()
+            }
         } else {
             Circle().fill(selectedMode == .detail ? .yellow : .white).frame(width: camera.isCapturing ? 58 : 66, height: camera.isCapturing ? 58 : 66)
         }
+    }
+
+    private var burstEligible: Bool {
+        selectedMode == .photo || selectedMode == .pro
     }
 
     private var shutterDisabled: Bool {
         if selectedMode == .video {
             return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isCapturing
         }
-        return !selectedMode.isImplemented || camera.isCapturing || camera.isRecording || camera.isPreparingVideo
+        return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
     }
 
     private var detailPanel: some View {
