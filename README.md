@@ -9,7 +9,9 @@ The first milestone is a real, usable camera foundation rather than a UI mockup.
 - Native SwiftUI interface
 - AVFoundation camera session
 - Live camera preview
-- Photo capture
+- Quality-first full-resolution photo capture
+- Hardware-aware native lens presets (for example 0.5x / 1x / 2x when those cameras exist)
+- Press-and-hold rapid burst capture
 - Front/rear camera switching
 - Tap-to-focus and exposure
 - Flash Auto / On / Off
