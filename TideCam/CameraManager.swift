@@ -699,9 +699,9 @@ final class CameraManager: NSObject, ObservableObject {
         do {
             try device.lockForConfiguration()
             let supported = device.activeFormat.isVideoHDRSupported
-            if videoHDREnabled && supported {
+            if supported {
                 device.automaticallyAdjustsVideoHDREnabled = false
-                device.isVideoHDREnabled = true
+                device.isVideoHDREnabled = videoHDREnabled
             } else {
                 device.automaticallyAdjustsVideoHDREnabled = true
             }
@@ -709,7 +709,7 @@ final class CameraManager: NSObject, ObservableObject {
             device.unlockForConfiguration()
             Task { @MainActor in
                 self.actualHDRStatus = active ? "HDR active" :
-                    (self.videoHDREnabled ? "HDR unsupported for this format" : "Auto/SDR")
+                    (self.videoHDREnabled ? "HDR unsupported for this format" : "HDR off")
             }
         } catch {
             Task { @MainActor in self.actualHDRStatus = "HDR unavailable" }
@@ -956,9 +956,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func savePhotoLocally(_ data: Data, reason: String) {
+    private func savePhotoLocally(_ data: Data, reason: String, preferredExtension: String? = nil) {
         do {
-            _ = try TideCamLibraryStorage.save(data)
+            _ = try TideCamLibraryStorage.save(data, preferredExtension: preferredExtension)
             TideCamLibraryStore.shared.refresh()
             videoStatus = "Photo saved in TideLibrary"
             errorMessage = "\(reason) The photo is safe in TideLibrary."
@@ -971,7 +971,7 @@ final class CameraManager: NSObject, ObservableObject {
         Task {
             let granted = await requestPhotoLibraryAddAccess()
             guard granted else {
-                savePhotoLocally(data, reason: "Photos access not granted.")
+                savePhotoLocally(data, reason: "Photos access not granted.", preferredExtension: preferredExtension)
                 return
             }
 
@@ -985,7 +985,7 @@ final class CameraManager: NSObject, ObservableObject {
                     request.addResource(with: .photo, data: data, options: options)
                 }
             } catch {
-                savePhotoLocally(data, reason: "Photos save failed: \(error.localizedDescription).")
+                savePhotoLocally(data, reason: "Photos save failed: \(error.localizedDescription).", preferredExtension: preferredExtension)
             }
         }
     }
