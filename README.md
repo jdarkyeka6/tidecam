@@ -94,3 +94,19 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - **Validate on iPhone:** full 200-shot stress test, capture timings, press-release stopping, photo orientation/colour, local fallback when Photos access denied, disk-full behaviour and review of the sampled best shot. A successful simulator compilation is not a performance guarantee.
 
 TideCam's normal PHOTO shutter remains available while the previous burst is exporting; starting another burst waits until its export finishes.
+
+## Apple Watch remote (watchOS 10+) preview
+
+TideCam now includes **TideCam Remote**, a companion Apple Watch app. The Watch can send immediate commands to a paired iPhone running TideCam:
+
+- One-tap photo shutter, start/stop video, start/stop Burst Pro, zoom ±0.5× (clamped to active camera limits), and switch front/rear camera.
+- Read-only feedback about iPhone camera readiness, current capture mode, recording/burst state, burst count and zoom.
+- Uses Apple's WatchConnectivity live message API with explicit reply/error feedback and reachability checks. Commands are never queued for execution when the iPhone reconnects later.
+- An iPhone-side Watch Connectivity delegate dispatches commands onto the main actor, validates capture state, and exposes current state through application context and live updates.
+- Watch app configured as a single watchOS app target (deployment watchOS 10) embedded with the existing iPhone app. No new developer account, cloud service or external server needed.
+- Phone camera and microphone permissions remain owned by the iPhone app.
+- Foreground requirement: the iPhone TideCam app must be running and reachable, and the paired Watch app must be active for immediate shutter control. It cannot reliably wake a force-quit app.
+- Not included yet: live viewfinder or processed photo previews on Watch. Those require a separate compressed-preview stream, throttling and watch battery/network optimisation.
+- Validation: build both iOS and watchOS targets in CI; test installation/handshake, latency and commands on a physical paired Watch/iPhone before TestFlight release. A simulator build cannot establish radio latency or watch installation behaviour.
+
+This work is isolated on the feature/watch-remote-v01 branch, stacked on Burst Pro v0.4. It is not merged or deployed automatically.
