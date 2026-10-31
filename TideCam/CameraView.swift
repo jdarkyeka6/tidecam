@@ -81,6 +81,14 @@ struct CameraView: View {
                 .padding(.bottom, 12)
             }
 
+            if selectedMode == .photo || selectedMode == .detail || selectedMode == .pro {
+                zoomControl
+            }
+
+            if selectedMode == .photo || selectedMode == .detail {
+                zoomEnhanceControl
+            }
+
             if selectedMode == .pro { proPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .detail { detailPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .video { videoPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
@@ -203,6 +211,70 @@ struct CameraView: View {
         return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
     }
 
+    private var zoomControl: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus.magnifyingglass")
+                .font(.caption.bold())
+            Text(String(format: "%.1f×", camera.zoomFactor))
+                .font(.caption.monospacedDigit().bold())
+                .frame(width: 45, alignment: .leading)
+
+            Slider(
+                value: Binding(
+                    get: { Double(camera.zoomFactor) },
+                    set: { camera.setZoom(CGFloat($0)) }
+                ),
+                in: Double(camera.minimumZoomFactor)...Double(max(camera.maximumZoomFactor, camera.minimumZoomFactor + 0.01))
+            )
+            .tint(.yellow)
+
+            Text(String(format: "%.0f×", camera.maximumZoomFactor))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.horizontal, 18)
+        .padding(.bottom, 9)
+        .disabled(camera.isCapturing)
+    }
+
+    private var zoomEnhanceControl: some View {
+        Button {
+            camera.zoomEnhanceEnabled.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: camera.zoomEnhanceEnabled ? "sparkles" : "sparkles.slash")
+                Text("ZOOM ENHANCE")
+                    .tracking(0.8)
+                Text(camera.zoomEnhanceEnabled ? "ON" : "OFF")
+                    .foregroundStyle(camera.zoomEnhanceEnabled ? .yellow : .white.opacity(0.6))
+                Spacer()
+                if !camera.zoomEnhanceStatus.isEmpty {
+                    Text(camera.zoomEnhanceStatus)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                } else {
+                    Text("1.5×+ digital cleanup")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+            }
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+        .disabled(camera.isCapturing)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
+    }
+
     private var detailPanel: some View {
         VStack(spacing: 10) {
             HStack {
@@ -216,7 +288,7 @@ struct CameraView: View {
             } else {
                 Slider(value: Binding(get: { Double(camera.detailFrameCount) }, set: { camera.detailFrameCount = Int($0) }), in: 4...30, step: 2).tint(.yellow)
             }
-            Text(camera.isCapturing ? "Hold still while TideCam collects the cleanest information from the scene." : "More frames can improve the source data but take longer to capture.").font(.caption2).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity, alignment: .leading)
+            Text(camera.isCapturing ? "Hold still while TideCam chooses the clearest frame." : "Selects the sharpest full-resolution frame. Frame fusion is not enabled yet.").font(.caption2).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(.white)
         .padding(14)
