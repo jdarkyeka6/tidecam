@@ -1,0 +1,32 @@
+name: Replace Old Apple Distribution Certificate
+
+on:
+  push:
+    branches: [testflight/video-face-20261031]
+    paths: [.github/workflows/revoke-old-distribution.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  revoke:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: false
+      - name: Install Fastlane
+        run: |
+          cp ios-ci/Gemfile Gemfile
+          mkdir -p fastlane
+          cp ios-ci/Fastfile fastlane/Fastfile
+          bundle install
+      - name: Revoke only explicitly selected oldest distribution certificate
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: bundle exec fastlane ios revoke_old_distribution
