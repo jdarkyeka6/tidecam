@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CameraView: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var watchRemote = WatchRemoteBridge()
     @State private var selectedMode: CameraMode = .photo
     @State private var showRecipes = false
     @State private var showLibrary = false
@@ -25,11 +26,101 @@ struct CameraView: View {
         }
         .sheet(isPresented: $showRecipes) { recipeSheet.presentationDetents([.medium]) }
         .fullScreenCover(isPresented: $showLibrary) { TideCamLibraryView() }
+        .onAppear { configureWatchRemote() }
+        .onReceive(camera.objectWillChange) { _ in
+            DispatchQueue.main.async { watchRemote.publishState() }
+        }
+        .onDisappear {
+            watchRemote.commandHandler = nil
+            watchRemote.stateProvider = nil
+        }
         .alert("TideCam", isPresented: Binding(get: { camera.errorMessage != nil }, set: { if !$0 { camera.errorMessage = nil } })) {
             Button("OK", role: .cancel) { camera.errorMessage = nil }
         } message: {
             Text(camera.errorMessage ?? "Unknown camera error")
         }
+    }
+
+    /// The watch uses live WCSession messages, never delayed queued actions.
+    /// All camera commands are gated on the same capture state as the iPhone UI.
+    private func configureWatchRemote() {
+        watchRemote.commandHandler = { [weak camera] action, value in
+            guard let camera else { return (false, "Open TideCam on iPhone") }
+            guard camera.isAuthorized, camera.isConfigured else {
+                return (false, "Unlock iPhone and open TideCam")
+            }
+            switch action {
+            case "photo":
+                guard !camera.isCapturing, !camera.isRecording,
+                      !camera.isPreparingVideo, !camera.isReconfiguringVideo else {
+                    return (false, "Camera busy")
+                }
+                camera.capturePhoto()
+                return (true, "Photo captured")
+            case "video":
+                guard !camera.isCapturing, !camera.isPreparingVideo,
+                      !camera.isReconfiguringVideo, !camera.isStoppingVideo else {
+                    return (false, "Camera busy")
+                }
+                guard camera.capabilities.supportsVideo else {
+                    return (false, "Video unsupported")
+                }
+                let stopping = camera.isRecording
+                camera.toggleVideoRecording()
+                return (true, stopping ? "Stopping video" : "Starting video")
+            case "burst":
+                if camera.isBursting {
+                    camera.endBurst()
+                    return (true, "Burst finishing")
+                }
+                guard !camera.isCapturing, !camera.isRecording,
+                      !camera.burstProcessing, !camera.isPreparingVideo,
+                      !camera.isReconfiguringVideo else {
+                    return (false, "Camera busy")
+                }
+                camera.beginBurst()
+                return (true, "Burst started")
+            case "flip":
+                guard !camera.isCapturing, !camera.isRecording,
+                      !camera.isPreparingVideo, !camera.isReconfiguringVideo else {
+                    return (false, "Camera busy")
+                }
+                camera.switchCamera()
+                return (true, "Camera switched")
+            case "zoom":
+                guard let value, value.isFinite,
+                      !camera.isReconfiguringVideo else {
+                    return (false, "Zoom unavailable")
+                }
+                camera.setZoom(
+                    min(max(CGFloat(value), camera.minimumZoomFactor),
+                        camera.maximumZoomFactor),
+                    smoothly: true
+                )
+                return (true, "Zoom adjusted")
+            default:
+                return (false, "Unknown remote command")
+            }
+        }
+
+        watchRemote.stateProvider = { [weak camera] in
+            guard let camera else { return ["ready": false] }
+            return [
+                "ready": camera.isAuthorized && camera.isConfigured,
+                "recording": camera.isRecording,
+                "bursting": camera.isBursting,
+                "busy": camera.isPreparingVideo || camera.isReconfiguringVideo ||
+                    camera.isStoppingVideo,
+                "burstCount": camera.burstCount,
+                "mode": camera.isRecording ? "VIDEO" :
+                    (camera.isBursting ? "BURST" : "PHOTO"),
+                "zoom": Double(camera.zoomFactor),
+                "minZoom": Double(camera.minimumZoomFactor),
+                "maxZoom": Double(camera.maximumZoomFactor)
+            ]
+        }
+        watchRemote.start()
+        watchRemote.publishState()
     }
 
     private var controls: some View {
