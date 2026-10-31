@@ -1,8 +1,10 @@
 name: TideCam to TestFlight
 
+# Isolated TestFlight candidate. Does not push or merge into main.
 on:
   push:
-    branches: [main]
+    branches: [testflight/video-face-20261031]
+    paths: [.github/workflows/testflight.yml]
   workflow_dispatch: {}
 
 permissions:
