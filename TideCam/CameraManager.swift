@@ -24,6 +24,14 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var videoStabilizationEnabled = true
     @Published var faceEnhancementEnabled = true
     @Published var videoStatus = ""
+    @Published var videoAudioEnabled = true
+    @Published var videoHDREnabled = false
+    @Published var actualHDRStatus = "Auto"
+    @Published var actualStabilizationStatus = "Automatic"
+    @Published var videoTorchEnabled = false
+    @Published var isStoppingVideo = false
+    @Published var recordingStartedAt: Date?
+    @Published var videoExposureBias: Float = 0
     @Published var flashMode: FlashMode = .auto
     @Published var lastPhoto: UIImage?
     @Published var errorMessage: String?
@@ -605,6 +613,7 @@ final class CameraManager: NSObject, ObservableObject {
         guard isConfigured, !isRecording, !isCapturing, !isPreparingVideo, !isReconfiguringVideo else { return }
         if let quality { videoQuality = quality }
         let requested = videoQuality
+        videoStatus = "Configuring recording"
         isReconfiguringVideo = true
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoInput?.device else {
@@ -620,11 +629,18 @@ final class CameraManager: NSObject, ObservableObject {
             }
             self.session.commitConfiguration()
             self.configuredVideoMode = enabled
-            if enabled { self.configureRecordingConnection() }
+            if enabled {
+                self.configureVideoHDR(device)
+                self.configureRecordingConnection()
+            } else {
+                self.updateTorch(device, enabled: false)
+            }
             self.publishCapabilities(for: device)
             Task { @MainActor in
                 self.isReconfiguringVideo = false
                 self.actualVideoFormat = enabled ? self.recordingFormatLabel(for: device) : "Photo mode"
+                self.videoStatus = enabled ? "Ready" : ""
+                if !enabled { self.videoTorchEnabled = false }
             }
         }
     }
@@ -677,6 +693,90 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// HDR is optional because not every frame rate / lens supports it.
+    /// Keep it disabled by default to avoid surprise colour/compatibility shifts.
+    private func configureVideoHDR(_ device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            let supported = device.activeFormat.isVideoHDRSupported
+            if videoHDREnabled && supported {
+                device.automaticallyAdjustsVideoHDREnabled = false
+                device.isVideoHDREnabled = true
+            } else {
+                device.automaticallyAdjustsVideoHDREnabled = true
+            }
+            let active = device.isVideoHDREnabled
+            device.unlockForConfiguration()
+            Task { @MainActor in
+                self.actualHDRStatus = active ? "HDR active" :
+                    (self.videoHDREnabled ? "HDR unsupported for this format" : "Auto/SDR")
+            }
+        } catch {
+            Task { @MainActor in self.actualHDRStatus = "HDR unavailable" }
+        }
+    }
+
+    func setVideoHDR(_ enabled: Bool) {
+        guard !isRecording, !isPreparingVideo, !isReconfiguringVideo else { return }
+        videoHDREnabled = enabled
+        setVideoMode(true)
+    }
+
+    func setVideoAudio(_ enabled: Bool) {
+        guard !isRecording, !isPreparingVideo, !isReconfiguringVideo else { return }
+        videoAudioEnabled = enabled
+    }
+
+    private func updateTorch(_ device: AVCaptureDevice, enabled: Bool) {
+        guard device.hasTorch else {
+            Task { @MainActor in self.videoTorchEnabled = false }
+            return
+        }
+        do {
+            try device.lockForConfiguration()
+            if enabled && device.isTorchModeSupported(.on) {
+                try device.setTorchModeOn(level: AVCaptureDevice.maxAvailableTorchLevel)
+            } else {
+                device.torchMode = .off
+            }
+            let torchOn = device.isTorchActive
+            device.unlockForConfiguration()
+            Task { @MainActor in self.videoTorchEnabled = torchOn }
+        } catch {
+            Task { @MainActor in
+                self.videoTorchEnabled = false
+                self.videoStatus = "Torch unavailable"
+            }
+        }
+    }
+
+    func toggleVideoTorch() {
+        guard isConfigured, !isReconfiguringVideo, !isPreparingVideo else { return }
+        let desired = !videoTorchEnabled
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoInput?.device else { return }
+            self.updateTorch(device, enabled: desired)
+        }
+    }
+
+    /// Exposure compensation changes EV, not ISO/shutter directly. AVFoundation
+    /// applies it to auto-exposure and clamps it to the device's supported range.
+    func setVideoExposureBias(_ value: Float) {
+        guard value.isFinite, !isReconfiguringVideo else { return }
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoInput?.device else { return }
+            let safe = min(max(value, device.minExposureTargetBias), device.maxExposureTargetBias)
+            do {
+                try device.lockForConfiguration()
+                device.setExposureTargetBias(safe, completionHandler: nil)
+                device.unlockForConfiguration()
+                Task { @MainActor in self.videoExposureBias = safe }
+            } catch {
+                Task { @MainActor in self.videoStatus = "Exposure compensation unavailable" }
+            }
+        }
+    }
+
     private func recordingFormatLabel(for device: AVCaptureDevice) -> String {
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let fpsTime = device.activeVideoMinFrameDuration
@@ -696,6 +796,12 @@ final class CameraManager: NSObject, ObservableObject {
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = videoStabilizationEnabled ? .auto : .off
         }
+        let supported = connection.isVideoStabilizationSupported
+        let active = connection.activeVideoStabilizationMode != .off
+        Task { @MainActor in
+            self.actualStabilizationStatus = !videoStabilizationEnabled ? "Off" :
+                (!supported ? "Not supported" : (active ? "Active" : "Auto (pending)"))
+        }
         // HEVC is supported in hardware on modern iPhones and provides better
         // compression at typical quality levels. Fall back to the default codec.
         if movieOutput.availableVideoCodecTypes.contains(.hevc),
@@ -705,20 +811,29 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func setVideoStabilization(_ enabled: Bool) {
-        guard !isRecording, !isPreparingVideo else { return }
+        guard !isRecording, !isPreparingVideo, !isReconfiguringVideo else { return }
         videoStabilizationEnabled = enabled
         sessionQueue.async { [weak self] in self?.configureRecordingConnection() }
     }
 
     func toggleVideoRecording() {
         if isRecording {
-            sessionQueue.async { [weak self] in self?.movieOutput.stopRecording() }
+            guard !isStoppingVideo else { return }
+            isStoppingVideo = true
+            videoStatus = "Finalizing video"
+            sessionQueue.async { [weak self] in
+                guard let self, self.movieOutput.isRecording else { return }
+                self.movieOutput.stopRecording()
+            }
             return
         }
         guard isConfigured, capabilities.supportsVideo, !isCapturing,
               !isPreparingVideo, !isReconfiguringVideo else { return }
         isPreparingVideo = true
-        Task { beginVideoRecording(includeAudio: await requestMicrophoneAccessIfNeeded()) }
+        isStoppingVideo = false
+        videoStatus = "Preparing recording"
+        let wantsAudio = videoAudioEnabled
+        Task { beginVideoRecording(includeAudio: wantsAudio && (await requestMicrophoneAccessIfNeeded())) }
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
@@ -751,6 +866,12 @@ final class CameraManager: NSObject, ObservableObject {
                 Task { @MainActor in self.actualVideoFormat = self.recordingFormatLabel(for: device) }
             }
 
+            if !includeAudio, let existing = self.audioInput {
+                self.session.beginConfiguration()
+                self.session.removeInput(existing)
+                self.audioInput = nil
+                self.session.commitConfiguration()
+            }
             if includeAudio, self.audioInput == nil,
                let microphone = AVCaptureDevice.default(for: .audio) {
                 do {
@@ -783,7 +904,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func switchCamera() {
-        guard !isRecording, !isPreparingVideo, !isCapturing else { return }
+        guard !isRecording, !isPreparingVideo, !isCapturing, !isReconfiguringVideo else { return }
         sessionQueue.async { [weak self] in
             guard let self, let currentInput = self.videoInput else { return }
             let newPosition: AVCaptureDevice.Position = self.position == .back ? .front : .back
@@ -802,6 +923,8 @@ final class CameraManager: NSObject, ObservableObject {
                     self.session.sessionPreset = .photo
                 }
                 self.publishCapabilities(for: device)
+                self.updateTorch(device, enabled: false)
+                if self.configuredVideoMode { self.configureVideoHDR(device) }
             } else {
                 self.session.addInput(currentInput)
                 self.videoInput = currentInput
@@ -812,7 +935,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func focus(at devicePoint: CGPoint) {
-        guard !isRecording, !isPreparingVideo else { return }
+        guard !isReconfiguringVideo else { return }
         sessionQueue.async { [weak self] in
             guard let device = self?.videoInput?.device else { return }
             do {
