@@ -6,6 +6,7 @@ struct CameraView: View {
     @State private var showRecipes = false
     @State private var showLibrary = false
     @State private var burstGestureTriggered = false
+    @State private var showAdvancedVideoControls = false
 
     var body: some View {
         ZStack {
@@ -34,9 +35,21 @@ struct CameraView: View {
     private var controls: some View {
         VStack(spacing: 0) {
             HStack {
-                Button(action: camera.cycleFlash) {
-                    Image(systemName: camera.flashMode.symbol).font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44).background(.ultraThinMaterial, in: Circle())
+                Button {
+                    if selectedMode == .video {
+                        camera.toggleVideoTorch()
+                    } else {
+                        camera.cycleFlash()
+                    }
+                } label: {
+                    Image(systemName: selectedMode == .video
+                          ? (camera.videoTorchEnabled ? "flashlight.on.fill" : "flashlight.off.fill")
+                          : camera.flashMode.symbol)
+                        .font(.system(size: 19, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
                 }
+                .disabled(selectedMode == .video && !camera.capabilities.supportsTorch)
                 Spacer()
                 VStack(spacing: 1) {
                     Text("TIDECAM").font(.system(size: 15, weight: .bold, design: .rounded)).tracking(2.2)
@@ -81,7 +94,8 @@ struct CameraView: View {
                 .padding(.bottom, 12)
             }
 
-            if selectedMode == .photo || selectedMode == .detail || selectedMode == .pro {
+            if selectedMode == .photo || selectedMode == .detail ||
+                selectedMode == .pro || selectedMode == .video {
                 zoomControl
             }
 
@@ -208,7 +222,7 @@ struct CameraView: View {
 
     private var shutterDisabled: Bool {
         if selectedMode == .video {
-            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isCapturing
+            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isStoppingVideo || camera.isCapturing
         }
         return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
     }
@@ -340,14 +354,23 @@ struct CameraView: View {
     }
 
     private var videoPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: camera.isRecording ? "record.circle.fill" : "video.fill")
                     .foregroundStyle(camera.isRecording ? .red : .white)
-                Text(camera.isRecording ? "RECORDING" : camera.isReconfiguringVideo ? "CONFIGURING" : "VIDEO PRO")
+                Text(camera.isRecording ? "RECORDING" :
+                    camera.isStoppingVideo ? "SAVING" :
+                    camera.isReconfiguringVideo ? "CONFIGURING" : "VIDEO PRO")
                     .font(.caption.bold())
                     .tracking(0.8)
                 Spacer()
+                if camera.isRecording, let started = camera.recordingStartedAt {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
+                        Text(recordingTime(timeline.date.timeIntervalSince(started)))
+                            .foregroundStyle(.red)
+                            .font(.caption.monospacedDigit().bold())
+                    }
+                }
                 Text(camera.actualVideoFormat)
                     .font(.caption2.monospacedDigit().bold())
                     .foregroundStyle(.yellow)
@@ -370,36 +393,102 @@ struct CameraView: View {
                                 )
                                 .foregroundStyle(camera.videoQuality == quality ? .black : .white)
                         }
-                        .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+                        .disabled(camera.isRecording || camera.isPreparingVideo ||
+                                  camera.isReconfiguringVideo || camera.isStoppingVideo)
                     }
                 }
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "figure.walk.motion")
-                Text("Video stabilisation")
-                    .font(.caption.bold())
+                Text(camera.actualStabilizationStatus)
+                    .font(.caption2)
                 Spacer()
-                Toggle("Video stabilisation", isOn: Binding(
-                    get: { camera.videoStabilizationEnabled },
-                    set: { camera.setVideoStabilization($0) }
-                ))
-                .labelsHidden()
-                .tint(.yellow)
-                .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+                Button {
+                    withAnimation(.snappy) { showAdvancedVideoControls.toggle() }
+                } label: {
+                    Label(showAdvancedVideoControls ? "Less" : "More controls",
+                          systemImage: "slider.horizontal.3")
+                        .font(.caption2.bold())
+                }
+                .buttonStyle(.plain)
             }
 
-            Text(camera.isRecording
-                 ? "Capturing the selected format with audio if permitted."
-                 : "4K, 60 fps and stabilisation depend on your iPhone. Actual format is shown above.")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.7))
+            if showAdvancedVideoControls {
+                videoAdvancedControls
+            }
+
+            if !camera.videoStatus.isEmpty {
+                Text(camera.videoStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.78))
+            }
         }
         .foregroundStyle(.white)
         .padding(14)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         .padding(.horizontal, 18)
-        .padding(.bottom, 14)
+        .padding(.bottom, 12)
+    }
+
+    private var videoAdvancedControls: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Stabilisation").font(.caption2)
+                Spacer()
+                Toggle("Stabilisation", isOn: Binding(
+                    get: { camera.videoStabilizationEnabled },
+                    set: { camera.setVideoStabilization($0) }
+                ))
+                .labelsHidden()
+                .tint(.yellow)
+            }
+            HStack {
+                Text("Microphone").font(.caption2)
+                Spacer()
+                Toggle("Microphone", isOn: Binding(
+                    get: { camera.videoAudioEnabled },
+                    set: { camera.setVideoAudio($0) }
+                ))
+                .labelsHidden()
+                .tint(.yellow)
+            }
+            HStack {
+                Text("HDR video").font(.caption2)
+                Spacer()
+                Text(camera.actualHDRStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.65))
+                Toggle("HDR video", isOn: Binding(
+                    get: { camera.videoHDREnabled },
+                    set: { camera.setVideoHDR($0) }
+                ))
+                .labelsHidden()
+                .tint(.yellow)
+            }
+            HStack(spacing: 10) {
+                Text("EV").font(.caption2.bold())
+                Slider(
+                    value: Binding(
+                        get: { Double(camera.videoExposureBias) },
+                        set: { camera.setVideoExposureBias(Float($0)) }
+                    ),
+                    in: -2...2
+                )
+                .tint(.yellow)
+                Text(String(format: "%+.1f", camera.videoExposureBias))
+                    .font(.caption2.monospacedDigit())
+                    .frame(width: 38)
+            }
+        }
+        .disabled(camera.isRecording || camera.isPreparingVideo ||
+                  camera.isReconfiguringVideo || camera.isStoppingVideo)
+    }
+
+    private func recordingTime(_ elapsed: TimeInterval) -> String {
+        let seconds = max(0, Int(elapsed))
+        return String(format: "%02d:%02d:%02d",
+                      seconds / 3600, (seconds / 60) % 60, seconds % 60)
     }
 
     private var proPanel: some View {
