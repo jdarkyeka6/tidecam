@@ -61,4 +61,7 @@ png.extend(chunk(b"IEND", b""))
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 OUT.write_bytes(png)
-print(f"Generated {OUT} ({len(png)} bytes)")
+watch_icon = Path("TideCamWatch/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png")
+watch_icon.parent.mkdir(parents=True, exist_ok=True)
+watch_icon.write_bytes(png)
+print(f"Generated phone and Watch app icons ({len(png)} bytes each)")
