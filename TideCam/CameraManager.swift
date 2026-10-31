@@ -508,8 +508,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.saveToLibrary(savedData)
                 if framesFused > 1 {
                     self.detailStatus = usedZoomEnhance
-                        ? "Fused \\(framesFused) frames + zoom enhanced"
-                        : "Fused \\(framesFused) frames"
+                        ? "Fused \(framesFused) frames + zoom enhanced"
+                        : "Fused \(framesFused) frames"
                 } else {
                     self.detailStatus = usedZoomEnhance ? "Zoom enhanced" : "Best frame saved"
                 }
