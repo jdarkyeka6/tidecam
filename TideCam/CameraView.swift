@@ -230,7 +230,7 @@ struct CameraView: View {
         return !selectedMode.isImplemented ||
             (camera.isCapturing && !camera.isBursting) ||
             camera.isRecording || camera.isPreparingVideo ||
-            camera.burstProcessing || camera.isReconfiguringVideo
+            camera.isReconfiguringVideo
     }
 
     private var zoomControl: some View {
@@ -418,7 +418,7 @@ struct CameraView: View {
 
                 HStack {
                     Image(systemName: "sparkles.rectangle.stack")
-                    Text("Auto best shot")
+                    Text("Best-shot preview (sampled)")
                         .font(.caption2.bold())
                     Spacer()
                     Toggle("Auto best shot", isOn: $camera.burstHighlightEnabled)
