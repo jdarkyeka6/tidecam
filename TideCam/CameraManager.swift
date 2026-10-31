@@ -651,9 +651,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         // On cameras exposing no exact format (e.g. some virtual cameras),
         // prefer the highest supported session preset rather than failing.
-        for preset: AVCaptureSession.Preset in [
-            .hd4K3840x2160, .hd1920x1080, .high
-        ] {
+        for preset in [AVCaptureSession.Preset.hd4K3840x2160, .hd1920x1080, .high] {
             if session.canSetSessionPreset(preset) {
                 session.sessionPreset = preset
                 return
