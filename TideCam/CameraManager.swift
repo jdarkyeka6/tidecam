@@ -29,6 +29,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var minimumZoomFactor: CGFloat = 1
     @Published var maximumZoomFactor: CGFloat = 1
     @Published var nativeZoomFactors: [CGFloat] = [1]
+    @Published var zoomEnhanceEnabled = true
+    @Published var zoomEnhanceStatus = ""
     @Published var detailProgress: Double = 0
     @Published var detailStatus = "Ready"
     @Published var detailFrameCount = 12
@@ -137,7 +139,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func nativeDisplayZoomFactors(for device: AVCaptureDevice) -> [CGFloat] {
         let reference = wideReferenceZoomFactor(for: device)
         let minimum = device.minAvailableVideoZoomFactor / reference
-        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
+        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 20)
 
         guard device.isVirtualDevice else {
             return [1].filter { $0 >= minimum && $0 <= maximum }
@@ -179,7 +181,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func displayZoomRange(for device: AVCaptureDevice) -> (minimum: CGFloat, maximum: CGFloat, current: CGFloat) {
         let reference = wideReferenceZoomFactor(for: device)
         let minimum = device.minAvailableVideoZoomFactor / reference
-        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
+        let maximum = min(device.maxAvailableVideoZoomFactor / reference, 20)
         let current = min(max(device.videoZoomFactor / reference, minimum), maximum)
         return (minimum, maximum, current)
     }
@@ -284,7 +286,7 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self, let device = self.videoInput?.device else { return }
             let reference = self.wideReferenceZoomFactor(for: device)
             let minimum = device.minAvailableVideoZoomFactor / reference
-            let maximum = min(device.maxAvailableVideoZoomFactor / reference, 10)
+            let maximum = min(device.maxAvailableVideoZoomFactor / reference, 20)
             let clamped = min(max(value, minimum), maximum)
             let hardwareZoom = min(
                 max(clamped * reference, device.minAvailableVideoZoomFactor),
@@ -330,6 +332,9 @@ final class CameraManager: NSObject, ObservableObject {
         settings.photoQualityPrioritization = .quality
 
         if !isRawCapture {
+            if photoOutput.isVirtualDeviceFusionSupported {
+                settings.isAutoVirtualDeviceFusionEnabled = true
+            }
             if let device = videoInput?.device, device.hasFlash {
                 settings.flashMode = flashMode.avMode
             }
@@ -347,6 +352,35 @@ final class CameraManager: NSObject, ObservableObject {
     /// Hold-to-shoot burst. Burst deliberately captures processed HEIF/JPEG frames
     /// with speed prioritization so the camera can keep firing instead of waiting
     /// for the heavier single-shot quality pipeline between every frame.
+    /// Digital-zoom enhancement is optional and never modifies the source.
+    /// The original remains in TideLibrary; the enhanced copy goes to Photos.
+    private func savePhotoWithOptionalEnhancement(_ data: Data, preview: UIImage) {
+        let capturedZoom = zoomFactor
+        guard zoomEnhanceEnabled && capturedZoom >= 1.5 else {
+            lastPhoto = preview
+            isCapturing = false
+            saveToLibrary(data)
+            return
+        }
+
+        zoomEnhanceStatus = "Enhancing zoom"
+        processingQueue.async { [weak self] in
+            let enhanced = ZoomEnhancer().enhance(data, zoomFactor: capturedZoom)
+            let keepOriginal = enhanced != nil && (try? TideCamLibraryStorage.save(data)) != nil
+            let finalData = keepOriginal ? enhanced! : data
+            let finalPreview = keepOriginal ? (UIImage(data: finalData) ?? preview) : preview
+
+            Task { @MainActor in
+                guard let self else { return }
+                self.lastPhoto = finalPreview
+                self.isCapturing = false
+                self.zoomEnhanceStatus = keepOriginal ? "Enhanced · original in TideLibrary" : ""
+                self.saveToLibrary(finalData)
+                if keepOriginal { TideCamLibraryStore.shared.refresh() }
+            }
+        }
+    }
+
     func beginBurst() {
         guard isConfigured, !isCapturing, !isRecording, !isPreparingVideo else { return }
         burstRequested = true
@@ -384,20 +418,26 @@ final class CameraManager: NSObject, ObservableObject {
         detailStatus = "Locking camera"
         isCapturing = true
         lockForDetailCapture()
-        captureNextDetailFrame()
     }
 
     private func lockForDetailCapture() {
         sessionQueue.async { [weak self] in
-            guard let device = self?.videoInput?.device else { return }
-            do {
-                try device.lockForConfiguration()
-                if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
-                if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
-                if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
-                device.unlockForConfiguration()
-                Task { @MainActor in self?.detailStatus = "Collecting frames" }
-            } catch { }
+            guard let self else { return }
+            if let device = self.videoInput?.device {
+                do {
+                    try device.lockForConfiguration()
+                    if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
+                    if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
+                    if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
+                    device.unlockForConfiguration()
+                } catch {
+                    // Still allow a capture if a device can't lock these controls.
+                }
+            }
+            Task { @MainActor in
+                self.detailStatus = "Collecting frames"
+                self.captureNextDetailFrame()
+            }
         }
     }
 
@@ -406,6 +446,9 @@ final class CameraManager: NSObject, ObservableObject {
         let settings = makeProcessedPhotoSettings()
         applyMaximumPhotoDimensions(to: settings)
         settings.photoQualityPrioritization = .balanced
+        if photoOutput.isVirtualDeviceFusionSupported {
+            settings.isAutoVirtualDeviceFusionEnabled = true
+        }
         if photoOutput.isContentAwareDistortionCorrectionSupported {
             settings.isAutoContentAwareDistortionCorrectionEnabled = true
         }
@@ -414,16 +457,33 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func finishDetailBurst() {
         let frames = detailFrameData
+        let enhance = zoomEnhanceEnabled && zoomFactor >= 1.5
+        let capturedZoom = zoomFactor
         detailStatus = "Analysing sharpness"
         processingQueue.async { [weak self] in
             let best = DetailProcessor().bestCandidate(from: frames)
+            let processed: Data?
+            let keptOriginal: Bool
+            if let best, enhance,
+               let enhanced = ZoomEnhancer().enhance(best.data, zoomFactor: capturedZoom),
+               (try? TideCamLibraryStorage.save(best.data)) != nil {
+                processed = enhanced
+                keptOriginal = true
+            } else {
+                processed = nil
+                keptOriginal = false
+            }
+            let processedPreview = processed.flatMap(UIImage.init(data:))
             Task { @MainActor in
                 guard let self else { return }
                 if let best {
-                    self.lastPhoto = best.image
-                    self.saveToLibrary(best.data)
-                    self.detailStatus = "Best frame saved"
-                } else { self.detailStatus = "Capture failed" }
+                    self.lastPhoto = processedPreview ?? best.image
+                    self.saveToLibrary(processed ?? best.data)
+                    self.detailStatus = keptOriginal ? "Enhanced + original kept" : "Best frame saved"
+                    if keptOriginal { TideCamLibraryStore.shared.refresh() }
+                } else {
+                    self.detailStatus = "Capture failed"
+                }
                 self.detailFrameData.removeAll()
                 self.detailProgress = 1
                 self.isCapturing = false
@@ -686,9 +746,7 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
                     self.isCapturing = false
                 }
             } else {
-                self.lastPhoto = image
-                self.isCapturing = false
-                self.saveToLibrary(data)
+                self.savePhotoWithOptionalEnhancement(data, preview: image)
             }
         }
     }
