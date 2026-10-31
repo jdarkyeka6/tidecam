@@ -360,31 +360,43 @@ final class CameraManager: NSObject, ObservableObject {
     /// Hold-to-shoot burst. Burst deliberately captures processed HEIF/JPEG frames
     /// with speed prioritization so the camera can keep firing instead of waiting
     /// for the heavier single-shot quality pipeline between every frame.
-    /// Digital-zoom enhancement is optional and never modifies the source.
-    /// The original remains in TideLibrary; the enhanced copy goes to Photos.
+    /// On-device zoom/face processing keeps the sharpest original photo.
+    /// Enhanced derivatives are saved to Photos, never in place of the original.
     private func savePhotoWithOptionalEnhancement(_ data: Data, preview: UIImage) {
         let capturedZoom = zoomFactor
-        guard zoomEnhanceEnabled && capturedZoom >= 1.5 else {
+        let doZoom = zoomEnhanceEnabled && capturedZoom >= 1.5
+        let doFace = faceEnhancementEnabled
+        guard doZoom || doFace else {
             lastPhoto = preview
             isCapturing = false
             saveToLibrary(data)
             return
         }
 
-        zoomEnhanceStatus = "Enhancing zoom"
+        zoomEnhanceStatus = "Processing photo"
         processingQueue.async { [weak self] in
-            let enhanced = ZoomEnhancer().enhance(data, zoomFactor: capturedZoom)
-            let keepOriginal = enhanced != nil && (try? TideCamLibraryStorage.save(data)) != nil
-            let finalData = keepOriginal ? enhanced! : data
-            let finalPreview = keepOriginal ? (UIImage(data: finalData) ?? preview) : preview
+            var processed = data
+            var enhanced = false
+            if doZoom, let zoomed = ZoomEnhancer().enhance(processed, zoomFactor: capturedZoom) {
+                processed = zoomed
+                enhanced = true
+            }
+            if doFace, let faces = FaceEnhancer().enhance(processed, zoomFactor: capturedZoom) {
+                processed = faces
+                enhanced = true
+            }
 
+            // Never replace the only source copy with a derivative.
+            let originalSaved = enhanced && (try? TideCamLibraryStorage.save(data)) != nil
+            let finalData = originalSaved ? processed : data
+            let finalPreview = UIImage(data: finalData) ?? preview
             Task { @MainActor in
                 guard let self else { return }
                 self.lastPhoto = finalPreview
                 self.isCapturing = false
-                self.zoomEnhanceStatus = keepOriginal ? "Enhanced · original in TideLibrary" : ""
+                self.zoomEnhanceStatus = originalSaved ? "Enhanced · original preserved" : ""
                 self.saveToLibrary(finalData)
-                if keepOriginal { TideCamLibraryStore.shared.refresh() }
+                if originalSaved { TideCamLibraryStore.shared.refresh() }
             }
         }
     }
@@ -498,7 +510,10 @@ final class CameraManager: NSObject, ObservableObject {
             let zoomData = enhance
                 ? ZoomEnhancer().enhance(fusedData, zoomFactor: capturedZoom)
                 : nil
-            let proposedData = zoomData ?? fusion?.data
+            let faceData = faceEnhancementEnabled
+                ? FaceEnhancer().enhance(zoomData ?? fusedData, zoomFactor: capturedZoom)
+                : nil
+            let proposedData = faceData ?? zoomData ?? fusion?.data
 
             // Never save a derivative as the only copy. If the original can't
             // be preserved, use the best source photo without enhancement.
@@ -508,6 +523,7 @@ final class CameraManager: NSObject, ObservableObject {
             let preview = UIImage(data: savedData)
             let framesFused = originalSaved ? (fusion?.frameCount ?? 1) : 1
             let usedZoomEnhance = originalSaved && zoomData != nil
+            let usedFaceEnhance = originalSaved && faceData != nil
 
             Task { @MainActor in
                 guard let self else { return }
@@ -520,6 +536,7 @@ final class CameraManager: NSObject, ObservableObject {
                 } else {
                     self.detailStatus = usedZoomEnhance ? "Zoom enhanced" : "Best frame saved"
                 }
+                if usedFaceEnhance { self.zoomEnhanceStatus = "Face detail enhanced" }
                 if originalSaved { TideCamLibraryStore.shared.refresh() }
                 self.detailFrameData.removeAll()
                 self.detailProgress = 1
