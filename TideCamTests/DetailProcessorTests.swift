@@ -17,6 +17,18 @@ final class DetailProcessorTests: XCTestCase {
         XCTAssertNil(enhancer.enhance(data, zoomFactor: 1))
     }
 
+    func testFusionRejectsMissingAndInvalidFrames() {
+        let fusion = MultiFrameFusion()
+        XCTAssertNil(fusion.fuse(reference: Data(), alternatives: [Data([0x01])]))
+        XCTAssertNil(fusion.fuse(reference: Data([0x01]), alternatives: []))
+    }
+
+    func testRankedFramesIgnoreInvalidData() {
+        let scorer = DetailProcessor()
+        XCTAssertTrue(scorer.rankedFrames(from: [Data([0x00])]).isEmpty)
+        XCTAssertNil(scorer.bestCandidate(from: []))
+    }
+
     func testRecipesUseSafeDetailFrameCounts() {
         XCTAssertTrue(CameraRecipe.builtIns.allSatisfy { (4...30).contains($0.detailFrames) })
     }
