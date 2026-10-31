@@ -72,39 +72,10 @@ platform :ios do
       keychain_password: keychain_pw
     }
 
-    begin
-      cert(**cert_args)
-    rescue => e
-      msg = e.message.to_s.downcase
-      unless msg.include?("maximum number") && msg.include?("distribution certificate")
-        raise
-      end
-
-      require "time"
-      allowed_types = [
-        Spaceship::ConnectAPI::Certificate::CertificateType::DISTRIBUTION,
-        Spaceship::ConnectAPI::Certificate::CertificateType::IOS_DISTRIBUTION
-      ]
-
-      distribution_certs = Spaceship::ConnectAPI::Certificate.all.select do |candidate|
-        allowed_types.include?(candidate.certificate_type)
-      end
-
-      UI.user_error!("Apple reported the Distribution certificate limit, but no distribution certificates were returned for revocation.") if distribution_certs.empty?
-
-      oldest = distribution_certs.min_by do |candidate|
-        begin
-          Time.parse(candidate.expiration_date.to_s)
-        rescue StandardError
-          Time.at(0)
-        end
-      end
-
-      UI.important("Distribution certificate limit reached. Revoking oldest distribution certificate, then retrying.")
-      oldest.delete!
-      sleep 3
-      cert(**cert_args)
-    end
+    # A TestFlight candidate must not revoke certificates belonging to other
+    # builds. If Apple has reached its signing limit, fail with an actionable
+    # error rather than deleting a shared distribution certificate.
+    cert(**cert_args)
 
     profile_attempt = 0
     begin
