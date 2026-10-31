@@ -39,3 +39,11 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     var height: Int32 { self == .uhd60 || self == .uhd30 ? 2160 : 1080 }
     var fps: Int32 { self == .uhd60 || self == .fhd60 ? 60 : 30 }
 }
+
+enum BurstMode: String, CaseIterable, Identifiable {
+    case fast = "TURBO"
+    case balanced = "DETAIL"
+
+    var id: String { rawValue }
+    var inFlightLimit: Int { self == .fast ? 3 : 2 }
+}
