@@ -42,7 +42,7 @@ struct ZoomEnhancer {
 
         func encode(as type: CFString) -> Data? {
             let result = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(result, type, 1, nil) else {
+            guard let destination = CGImageDestinationCreateWithData(result as CFMutableData, type, 1, nil) else {
                 return nil
             }
             var options = (properties as? [String: Any]) ?? [:]
