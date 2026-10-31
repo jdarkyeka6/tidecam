@@ -81,6 +81,15 @@ struct CameraView: View {
                 .padding(.bottom, 12)
             }
 
+            if selectedMode == .photo || selectedMode == .detail || selectedMode == .pro {
+                zoomControl
+            }
+
+            if selectedMode == .photo || selectedMode == .detail {
+                zoomEnhanceControl
+                faceEnhanceControl
+            }
+
             if selectedMode == .pro { proPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .detail { detailPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .video { videoPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
@@ -91,6 +100,7 @@ struct CameraView: View {
                         ForEach(CameraMode.allCases) { mode in
                             Button {
                                 withAnimation(.snappy) { selectedMode = mode }
+                                camera.setVideoMode(mode == .video)
                             } label: {
                                 VStack(spacing: 3) {
                                     Text(mode.rawValue).font(.system(size: 13, weight: selectedMode == mode ? .bold : .medium))
@@ -98,7 +108,7 @@ struct CameraView: View {
                                 }
                                 .foregroundStyle(selectedMode == mode ? .yellow : .white.opacity(mode.isImplemented ? 0.72 : 0.38))
                             }
-                            .disabled(camera.isRecording || camera.isPreparingVideo)
+                            .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isCapturing)
                         }
                     }
                     .padding(.horizontal, 30)
@@ -198,9 +208,95 @@ struct CameraView: View {
 
     private var shutterDisabled: Bool {
         if selectedMode == .video {
-            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isCapturing
+            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isCapturing
         }
         return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
+    }
+
+    private var zoomControl: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus.magnifyingglass")
+                .font(.caption.bold())
+            Text(String(format: "%.1f×", camera.zoomFactor))
+                .font(.caption.monospacedDigit().bold())
+                .frame(width: 45, alignment: .leading)
+
+            Slider(
+                value: Binding(
+                    get: { Double(camera.zoomFactor) },
+                    set: { camera.setZoom(CGFloat($0)) }
+                ),
+                in: Double(camera.minimumZoomFactor)...Double(max(camera.maximumZoomFactor, camera.minimumZoomFactor + 0.01))
+            )
+            .tint(.yellow)
+
+            Text(String(format: "%.0f×", camera.maximumZoomFactor))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.horizontal, 18)
+        .padding(.bottom, 9)
+        .disabled(camera.isCapturing)
+    }
+
+    private var zoomEnhanceControl: some View {
+        Button {
+            camera.zoomEnhanceEnabled.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: camera.zoomEnhanceEnabled ? "sparkles" : "sparkles.slash")
+                Text("ZOOM ENHANCE")
+                    .tracking(0.8)
+                Text(camera.zoomEnhanceEnabled ? "ON" : "OFF")
+                    .foregroundStyle(camera.zoomEnhanceEnabled ? .yellow : .white.opacity(0.6))
+                Spacer()
+                if !camera.zoomEnhanceStatus.isEmpty {
+                    Text(camera.zoomEnhanceStatus)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                } else {
+                    Text("1.5×+ digital cleanup")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+            }
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+        .disabled(camera.isCapturing)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
+    }
+
+    private var faceEnhanceControl: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "face.smiling.inverse")
+            Text("FACE DETAIL")
+                .font(.caption.bold())
+            Spacer()
+            Text("Vision AI detection")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.65))
+            Toggle("Face Detail", isOn: $camera.faceEnhancementEnabled)
+                .labelsHidden()
+                .tint(.yellow)
+                .disabled(camera.isCapturing)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
     }
 
     private var detailPanel: some View {
@@ -216,7 +312,25 @@ struct CameraView: View {
             } else {
                 Slider(value: Binding(get: { Double(camera.detailFrameCount) }, set: { camera.detailFrameCount = Int($0) }), in: 4...30, step: 2).tint(.yellow)
             }
-            Text(camera.isCapturing ? "Hold still while TideCam collects the cleanest information from the scene." : "More frames can improve the source data but take longer to capture.").font(.caption2).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Image(systemName: "square.stack.3d.up")
+                Text("SMART FUSION")
+                    .font(.caption.bold())
+                Spacer()
+                Toggle("Smart Fusion", isOn: $camera.detailFusionEnabled)
+                    .labelsHidden()
+                    .tint(.yellow)
+                    .disabled(camera.isCapturing)
+            }
+
+            Text(camera.isCapturing
+                 ? "Hold steady. TideCam is collecting frames for alignment."
+                 : camera.detailFusionEnabled
+                    ? "Aligns compatible frames and combines stable areas. Motion falls back to the sharpest capture."
+                    : "Selects the sharpest original frame without fusion.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(.white)
         .padding(14)
@@ -226,13 +340,60 @@ struct CameraView: View {
     }
 
     private var videoPanel: some View {
-        HStack(spacing: 10) {
-            Image(systemName: camera.isRecording ? "record.circle.fill" : "video.fill").foregroundStyle(camera.isRecording ? .red : .white)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(camera.isRecording ? "RECORDING" : camera.isPreparingVideo ? "PREPARING VIDEO" : "VIDEO").font(.caption.bold()).tracking(1)
-                Text(camera.capabilities.supportsVideo ? "Tap the red button to \(camera.isRecording ? "stop and save" : "start recording")." : "Video is unavailable on this camera.").font(.caption2).foregroundStyle(.white.opacity(0.7))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: camera.isRecording ? "record.circle.fill" : "video.fill")
+                    .foregroundStyle(camera.isRecording ? .red : .white)
+                Text(camera.isRecording ? "RECORDING" : camera.isReconfiguringVideo ? "CONFIGURING" : "VIDEO PRO")
+                    .font(.caption.bold())
+                    .tracking(0.8)
+                Spacer()
+                Text(camera.actualVideoFormat)
+                    .font(.caption2.monospacedDigit().bold())
+                    .foregroundStyle(.yellow)
             }
-            Spacer()
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(VideoQuality.allCases) { quality in
+                        Button {
+                            camera.setVideoMode(true, quality: quality)
+                        } label: {
+                            Text(quality.rawValue)
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(
+                                    camera.videoQuality == quality
+                                        ? Color.yellow : Color.white.opacity(0.12),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(camera.videoQuality == quality ? .black : .white)
+                        }
+                        .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+                    }
+                }
+            }
+
+            HStack {
+                Image(systemName: "figure.walk.motion")
+                Text("Video stabilisation")
+                    .font(.caption.bold())
+                Spacer()
+                Toggle("Video stabilisation", isOn: Binding(
+                    get: { camera.videoStabilizationEnabled },
+                    set: { camera.setVideoStabilization($0) }
+                ))
+                .labelsHidden()
+                .tint(.yellow)
+                .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+            }
+
+            Text(camera.isRecording
+                 ? "Capturing the selected format with audio if permitted."
+                 : "4K, 60 fps and stabilisation depend on your iPhone. Actual format is shown above.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
         .padding(14)

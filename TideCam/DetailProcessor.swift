@@ -16,38 +16,77 @@ struct DetailProcessor {
 
     private let context = CIContext(options: [.cacheIntermediates: false])
 
-    func bestCandidate(from frames: [Data]) -> Candidate? {
-        frames.compactMap(analyse).max { $0.score < $1.score }
+    struct ScoredFrame {
+        let data: Data
+        let sharpness: Double
+        let brightness: Double
+        let score: Double
     }
 
-    private func analyse(_ data: Data) -> Candidate? {
-        guard let uiImage = UIImage(data: data),
-              let ciImage = CIImage(data: data) else { return nil }
+    /// Only keep the top-ranked encoded frames. Avoid decoding 30 full-size
+    /// UIImages into memory while analysing a Detail burst.
+    func rankedFrames(from frames: [Data], limit: Int = 5) -> [ScoredFrame] {
+        guard limit > 0 else { return [] }
+        var leaders: [ScoredFrame] = []
+        for frame in frames {
+            autoreleasepool {
+                guard let candidate = analyse(frame) else { return }
+                leaders.append(candidate)
+                leaders.sort { $0.score > $1.score }
+                if leaders.count > limit { leaders.removeLast() }
+            }
+        }
+        return leaders
+    }
+
+    func bestCandidate(from frames: [Data]) -> Candidate? {
+        guard let best = rankedFrames(from: frames, limit: 1).first,
+              let image = UIImage(data: best.data) else {
+            return nil
+        }
+        return Candidate(
+            data: best.data, image: image,
+            sharpness: best.sharpness, brightness: best.brightness,
+            score: best.score
+        )
+    }
+
+    private func analyse(_ data: Data) -> ScoredFrame? {
+        guard let ciImage = CIImage(data: data) else { return nil }
 
         let extent = ciImage.extent.integral
         guard extent.width > 1, extent.height > 1 else { return nil }
 
-        // CIAreaAverage gives a cheap exposure sanity signal.
-        let average = ciImage
-            .applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: extent)])
+        let average = ciImage.applyingFilter("CIAreaAverage", parameters: [
+            kCIInputExtentKey: CIVector(cgRect: extent)
+        ])
 
         var rgba = [UInt8](repeating: 0, count: 4)
-        context.render(average,
-                       toBitmap: &rgba,
-                       rowBytes: 4,
-                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                       format: .RGBA8,
-                       colorSpace: CGColorSpaceCreateDeviceRGB())
+        context.render(
+            average, toBitmap: &rgba, rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
         let brightness = (Double(rgba[0]) + Double(rgba[1]) + Double(rgba[2])) / (3 * 255)
 
-        guard let cgImage = context.createCGImage(ciImage, from: extent) else { return nil }
+        let scale = min(1, 1024 / max(extent.width, extent.height))
+        let sample = scale < 1
+            ? ciImage.applyingFilter("CILanczosScaleTransform", parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1.0
+            ])
+            : ciImage
+        guard let cgImage = context.createCGImage(sample, from: sample.extent) else {
+            return nil
+        }
         let sharpness = laplacianVariance(cgImage)
 
-        // Penalise frames approaching clipped black/white while strongly
-        // rewarding local edge energy. Values are relative within a burst.
         let exposurePenalty = abs(brightness - 0.5) * 0.25
         let score = log1p(sharpness) - exposurePenalty
-        return Candidate(data: data, image: uiImage, sharpness: sharpness, brightness: brightness, score: score)
+        return ScoredFrame(
+            data: data, sharpness: sharpness,
+            brightness: brightness, score: score
+        )
     }
 
     private func laplacianVariance(_ image: CGImage) -> Double {
