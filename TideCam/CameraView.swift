@@ -87,6 +87,7 @@ struct CameraView: View {
 
             if selectedMode == .photo || selectedMode == .detail {
                 zoomEnhanceControl
+                faceEnhanceControl
             }
 
             if selectedMode == .pro { proPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
@@ -99,6 +100,7 @@ struct CameraView: View {
                         ForEach(CameraMode.allCases) { mode in
                             Button {
                                 withAnimation(.snappy) { selectedMode = mode }
+                                camera.setVideoMode(mode == .video)
                             } label: {
                                 VStack(spacing: 3) {
                                     Text(mode.rawValue).font(.system(size: 13, weight: selectedMode == mode ? .bold : .medium))
@@ -106,7 +108,7 @@ struct CameraView: View {
                                 }
                                 .foregroundStyle(selectedMode == mode ? .yellow : .white.opacity(mode.isImplemented ? 0.72 : 0.38))
                             }
-                            .disabled(camera.isRecording || camera.isPreparingVideo)
+                            .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isCapturing)
                         }
                     }
                     .padding(.horizontal, 30)
@@ -206,7 +208,7 @@ struct CameraView: View {
 
     private var shutterDisabled: Bool {
         if selectedMode == .video {
-            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isCapturing
+            return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isCapturing
         }
         return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
     }
@@ -275,6 +277,28 @@ struct CameraView: View {
         .padding(.bottom, 10)
     }
 
+    private var faceEnhanceControl: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "face.smiling.inverse")
+            Text("FACE DETAIL")
+                .font(.caption.bold())
+            Spacer()
+            Text("Vision AI detection")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.65))
+            Toggle("Face Detail", isOn: $camera.faceEnhancementEnabled)
+                .labelsHidden()
+                .tint(.yellow)
+                .disabled(camera.isCapturing)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
+    }
+
     private var detailPanel: some View {
         VStack(spacing: 10) {
             HStack {
@@ -316,13 +340,60 @@ struct CameraView: View {
     }
 
     private var videoPanel: some View {
-        HStack(spacing: 10) {
-            Image(systemName: camera.isRecording ? "record.circle.fill" : "video.fill").foregroundStyle(camera.isRecording ? .red : .white)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(camera.isRecording ? "RECORDING" : camera.isPreparingVideo ? "PREPARING VIDEO" : "VIDEO").font(.caption.bold()).tracking(1)
-                Text(camera.capabilities.supportsVideo ? "Tap the red button to \(camera.isRecording ? "stop and save" : "start recording")." : "Video is unavailable on this camera.").font(.caption2).foregroundStyle(.white.opacity(0.7))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: camera.isRecording ? "record.circle.fill" : "video.fill")
+                    .foregroundStyle(camera.isRecording ? .red : .white)
+                Text(camera.isRecording ? "RECORDING" : camera.isReconfiguringVideo ? "CONFIGURING" : "VIDEO PRO")
+                    .font(.caption.bold())
+                    .tracking(0.8)
+                Spacer()
+                Text(camera.actualVideoFormat)
+                    .font(.caption2.monospacedDigit().bold())
+                    .foregroundStyle(.yellow)
             }
-            Spacer()
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(VideoQuality.allCases) { quality in
+                        Button {
+                            camera.setVideoMode(true, quality: quality)
+                        } label: {
+                            Text(quality.rawValue)
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(
+                                    camera.videoQuality == quality
+                                        ? Color.yellow : Color.white.opacity(0.12),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(camera.videoQuality == quality ? .black : .white)
+                        }
+                        .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+                    }
+                }
+            }
+
+            HStack {
+                Image(systemName: "figure.walk.motion")
+                Text("Video stabilisation")
+                    .font(.caption.bold())
+                Spacer()
+                Toggle("Video stabilisation", isOn: Binding(
+                    get: { camera.videoStabilizationEnabled },
+                    set: { camera.setVideoStabilization($0) }
+                ))
+                .labelsHidden()
+                .tint(.yellow)
+                .disabled(camera.isRecording || camera.isPreparingVideo || camera.isReconfiguringVideo)
+            }
+
+            Text(camera.isRecording
+                 ? "Capturing the selected format with audio if permitted."
+                 : "4K, 60 fps and stabilisation depend on your iPhone. Actual format is shown above.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
         .padding(14)
