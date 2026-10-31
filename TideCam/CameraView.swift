@@ -288,7 +288,25 @@ struct CameraView: View {
             } else {
                 Slider(value: Binding(get: { Double(camera.detailFrameCount) }, set: { camera.detailFrameCount = Int($0) }), in: 4...30, step: 2).tint(.yellow)
             }
-            Text(camera.isCapturing ? "Hold still while TideCam chooses the clearest frame." : "Selects the sharpest full-resolution frame. Frame fusion is not enabled yet.").font(.caption2).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Image(systemName: "square.stack.3d.up")
+                Text("SMART FUSION")
+                    .font(.caption.bold())
+                Spacer()
+                Toggle("Smart Fusion", isOn: $camera.detailFusionEnabled)
+                    .labelsHidden()
+                    .tint(.yellow)
+                    .disabled(camera.isCapturing)
+            }
+
+            Text(camera.isCapturing
+                 ? "Hold steady. TideCam is collecting frames for alignment."
+                 : camera.detailFusionEnabled
+                    ? "Aligns compatible frames and combines stable areas. Motion falls back to the sharpest capture."
+                    : "Selects the sharpest original frame without fusion.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(.white)
         .padding(14)
