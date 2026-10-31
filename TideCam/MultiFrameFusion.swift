@@ -115,8 +115,6 @@ struct MultiFrameFusion {
 
         let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
         let outputType = CGImageSourceGetType(source) ?? "public.jpeg" as CFString
-        let result = NSMutableData()
-
         func write(as type: CFString) -> Data? {
             let data = NSMutableData()
             guard let destination = CGImageDestinationCreateWithData(data as CFMutableData, type, 1, nil) else {
@@ -131,7 +129,6 @@ struct MultiFrameFusion {
         // Fall back to JPEG when a device's source codec cannot be exported.
         let encoded = write(as: outputType) ?? write(as: "public.jpeg" as CFString)
         guard let encoded else { return nil }
-        _ = result // The encoded CFData buffer is returned from write(as:).
-        return Result(data: encoded, frameCount: frameCount)
+                return Result(data: encoded, frameCount: frameCount)
     }
 }
