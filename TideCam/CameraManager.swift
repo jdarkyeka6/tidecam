@@ -953,11 +953,22 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func savePhotoLocally(_ data: Data, reason: String) {
+        do {
+            _ = try TideCamLibraryStorage.save(data)
+            TideCamLibraryStore.shared.refresh()
+            videoStatus = "Photo saved in TideLibrary"
+            errorMessage = "\(reason) The photo is safe in TideLibrary."
+        } catch {
+            errorMessage = "\(reason) Local photo backup failed: \(error.localizedDescription)"
+        }
+    }
+
     private func saveToLibrary(_ data: Data, preferredExtension: String? = nil) {
         Task {
             let granted = await requestPhotoLibraryAddAccess()
             guard granted else {
-                self.errorMessage = "Allow TideCam to add photos in Settings so captures appear in TideLibrary."
+                savePhotoLocally(data, reason: "Photos access not granted.")
                 return
             }
 
@@ -971,8 +982,21 @@ final class CameraManager: NSObject, ObservableObject {
                     request.addResource(with: .photo, data: data, options: options)
                 }
             } catch {
-                self.errorMessage = "Photo library save failed: \(error.localizedDescription)"
+                savePhotoLocally(data, reason: "Photos save failed: \(error.localizedDescription).")
             }
+        }
+    }
+
+    private func preserveVideoLocally(_ url: URL, reason: String) {
+        do {
+            _ = try TideCamLibraryStorage.moveFile(from: url, preferredExtension: "mov")
+            TideCamLibraryStore.shared.refresh()
+            videoStatus = "Saved to TideLibrary"
+            errorMessage = "\(reason) The recording is safe in TideLibrary."
+        } catch {
+            videoStatus = "Video save needs attention"
+            errorMessage = "\(reason) Local save also failed: \(error.localizedDescription)"
+            // Deliberately leave the original temporary file intact.
         }
     }
 
@@ -980,8 +1004,7 @@ final class CameraManager: NSObject, ObservableObject {
         Task {
             let granted = await requestPhotoLibraryAddAccess()
             guard granted else {
-                self.errorMessage = "Allow TideCam to add photos in Settings so videos appear in TideLibrary."
-                try? FileManager.default.removeItem(at: url)
+                preserveVideoLocally(url, reason: "Photos access not granted.")
                 return
             }
 
@@ -993,9 +1016,15 @@ final class CameraManager: NSObject, ObservableObject {
                     options.originalFilename = "TideCam-\(UUID().uuidString).mov"
                     request.addResource(with: .video, fileURL: url, options: options)
                 }
+                videoStatus = "Saved to Photos"
+                TideCamLibraryStore.shared.refreshApplePhotos()
             } catch {
-                self.errorMessage = "Photo library video save failed: \(error.localizedDescription)"
-                try? FileManager.default.removeItem(at: url)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    preserveVideoLocally(url, reason: "Photos video save failed: \(error.localizedDescription).")
+                } else {
+                    videoStatus = "Video save could not be verified"
+                    errorMessage = "Photos reported a video save error: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -1079,14 +1108,50 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
 }
 
 extension CameraManager: AVCaptureFileOutputRecordingDelegate {
-    nonisolated func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, from connections: [AVCaptureConnection]) {
-        Task { @MainActor in self.isPreparingVideo = false; self.isRecording = true }
-    }
-    nonisolated func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+    nonisolated func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didStartRecordingTo fileURL: URL,
+        from connections: [AVCaptureConnection]
+    ) {
         Task { @MainActor in
-            self.isPreparingVideo = false; self.isRecording = false
-            if let error { try? FileManager.default.removeItem(at: outputFileURL); self.errorMessage = error.localizedDescription }
-            else { self.saveVideoToLibrary(outputFileURL) }
+            self.isPreparingVideo = false
+            self.isRecording = true
+            self.recordingStartedAt = Date()
+            self.videoStatus = "Recording"
+        }
+    }
+
+    nonisolated func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        Task { @MainActor in
+            self.isPreparingVideo = false
+            self.isRecording = false
+            self.isStoppingVideo = false
+            self.recordingStartedAt = nil
+
+            if let error {
+                // If AVFoundation ended unexpectedly but wrote a usable movie,
+                // preserve it rather than deleting potentially precious footage.
+                let size = (try? FileManager.default.attributesOfItem(
+                    atPath: outputFileURL.path
+                )[.size] as? NSNumber)?.int64Value ?? 0
+                if size > 4096 {
+                    self.preserveVideoLocally(
+                        outputFileURL,
+                        reason: "Recording interrupted: \(error.localizedDescription)."
+                    )
+                } else {
+                    self.videoStatus = "Recording failed"
+                    self.errorMessage = error.localizedDescription
+                }
+            } else {
+                self.videoStatus = "Saving recording"
+                self.saveVideoToLibrary(outputFileURL)
+            }
         }
     }
 }
