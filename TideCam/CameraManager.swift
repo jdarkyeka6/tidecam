@@ -16,6 +16,14 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isCapturing = false
     @Published var isBursting = false
     @Published var burstCount = 0
+    @Published var burstSavedCount = 0
+    @Published var burstExportedCount = 0
+    @Published var burstProcessing = false
+    @Published var burstStatus = "Hold the shutter for Burst Pro"
+    @Published var burstCaptureRate: Double = 0
+    @Published var burstShotLimit = 100
+    @Published var burstHighlightEnabled = true
+    @Published var burstMode: BurstMode = .fast
     @Published var isRecording = false
     @Published var isPreparingVideo = false
     @Published var isReconfiguringVideo = false
@@ -53,6 +61,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     private let sessionQueue = DispatchQueue(label: "com.tidecam.session")
     private let processingQueue = DispatchQueue(label: "com.tidecam.detail", qos: .userInitiated)
+    private let burstWriteQueue = DispatchQueue(label: "com.tidecam.burst.storage", qos: .userInitiated)
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
     private var videoInput: AVCaptureDeviceInput?
@@ -63,6 +72,14 @@ final class CameraManager: NSObject, ObservableObject {
     private var detailFramesRequested = 0
     private var detailFrameData: [Data] = []
     private var burstRequested = false
+    private var burstID = UUID()
+    private var burstStartedAt: Date?
+    private var burstInFlight = 0
+    private var burstPendingWrites = 0
+    private var burstFailures = 0
+    private var burstFinalized = false
+    private var burstDelegates: [Int64: BurstFrameCaptureDelegate] = [:]
+    private var burstLocalURLs: [URL] = []
     private let maximumBurstCount = 200
 
     override init() { super.init(); Task { await requestPermissionAndConfigure() } }
@@ -410,30 +427,216 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func beginBurst() {
-        guard isConfigured, !isCapturing, !isRecording, !isPreparingVideo else { return }
+        guard isConfigured, !isCapturing, !isRecording, !isPreparingVideo,
+              !isReconfiguringVideo, !burstProcessing else { return }
+
+        burstID = UUID()
+        burstStartedAt = Date()
         burstRequested = true
+        burstFinalized = false
+        burstInFlight = 0
+        burstPendingWrites = 0
+        burstFailures = 0
+        burstDelegates.removeAll()
+        burstLocalURLs.removeAll()
         burstCount = 0
+        burstSavedCount = 0
+        burstExportedCount = 0
+        burstCaptureRate = 0
+        burstStatus = "Capturing at device speed"
         isBursting = true
         isCapturing = true
-        captureNextBurstFrame()
+        pumpBurst()
     }
 
     func endBurst() {
+        guard isBursting else { return }
         burstRequested = false
+        burstStatus = "Finishing photos"
+        finishBurstIfReady()
     }
 
-    private func captureNextBurstFrame() {
-        guard burstRequested, burstCount < maximumBurstCount else {
+    /// Up to 3 concurrent requests on Fast, 2 on Balanced. Never enqueue
+    /// unlimited full-size images or block the camera on Photos save dialogs.
+    /// Hardware and image processing determine actual throughput.
+    private func pumpBurst() {
+        let maxInFlight = burstMode == .fast ? 3 : 2
+        let limit = min(max(burstShotLimit, 5), maximumBurstCount)
+        while burstRequested &&
+              burstInFlight < maxInFlight &&
+              burstPendingWrites < 5 &&
+              burstCount + burstInFlight < limit {
+            let settings = makeProcessedPhotoSettings()
+            applyMaximumPhotoDimensions(to: settings)
+            settings.photoQualityPrioritization =
+                burstMode == .fast ? .speed : .balanced
+
+            let photoID = settings.uniqueID
+            let batchID = burstID
+            let delegate = BurstFrameCaptureDelegate { [weak self] data, error in
+                Task { @MainActor [weak self] in
+                    self?.completeBurstFrame(
+                        captureID: photoID,
+                        batchID: batchID,
+                        data: data,
+                        error: error
+                    )
+                }
+            }
+
+            burstDelegates[photoID] = delegate
+            burstInFlight += 1
+            photoOutput.capturePhoto(with: settings, delegate: delegate)
+        }
+
+        if burstCount + burstInFlight >= limit {
             burstRequested = false
-            isBursting = false
-            isCapturing = false
+        }
+        finishBurstIfReady()
+    }
+
+    private func completeBurstFrame(
+        captureID: Int64,
+        batchID: UUID,
+        data: Data?,
+        error: Error?
+    ) {
+        guard batchID == burstID else { return }
+        burstDelegates.removeValue(forKey: captureID)
+        burstInFlight = max(0, burstInFlight - 1)
+
+        if let data, error == nil {
+            burstCount += 1
+            if burstCount == 1 {
+                lastPhoto = UIImage(data: data)
+            }
+            if let started = burstStartedAt {
+                burstCaptureRate = Double(burstCount) /
+                    max(0.1, Date().timeIntervalSince(started))
+            }
+
+            burstPendingWrites += 1
+            burstWriteQueue.async { [weak self] in
+                let savedURL = try? TideCamLibraryStorage.save(data)
+                Task { @MainActor [weak self] in
+                    self?.burstWriteCompleted(batchID: batchID, url: savedURL)
+                }
+            }
+        } else {
+            burstFailures += 1
+            if burstFailures >= 5 {
+                burstRequested = false
+                burstStatus = "Camera paused after repeated capture errors"
+            }
+        }
+
+        pumpBurst()
+    }
+
+    private func burstWriteCompleted(batchID: UUID, url: URL?) {
+        guard batchID == burstID else { return }
+        burstPendingWrites = max(0, burstPendingWrites - 1)
+        if let url {
+            burstLocalURLs.append(url)
+            burstSavedCount += 1
+        } else {
+            burstFailures += 1
+            // Stop safely before the device runs out of available storage.
+            burstRequested = false
+            burstStatus = "Storage error: finishing safely"
+        }
+        pumpBurst()
+    }
+
+    private func finishBurstIfReady() {
+        guard !burstRequested, burstInFlight == 0,
+              burstPendingWrites == 0, !burstFinalized,
+              isBursting else { return }
+        burstFinalized = true
+        isBursting = false
+        isCapturing = false
+        burstProcessing = true
+
+        let urls = burstLocalURLs
+        let batchID = burstID
+        let findHighlight = burstHighlightEnabled
+        burstLocalURLs.removeAll()
+        burstDelegates.removeAll()
+
+        guard !urls.isEmpty else {
+            burstProcessing = false
+            burstStatus = "No photos were captured"
+            if burstFailures > 0 {
+                errorMessage = "The camera couldn't capture this burst."
+            }
             return
         }
 
-        let settings = makeProcessedPhotoSettings()
-        applyMaximumPhotoDimensions(to: settings)
-        settings.photoQualityPrioritization = .speed
-        photoOutput.capturePhoto(with: settings, delegate: self)
+        burstStatus = findHighlight ? "Finding the sharpest shot" : "Saving burst"
+        processingQueue.async { [weak self] in
+            let chosen = findHighlight
+                ? BurstHighlightPicker().select(from: urls)
+                : nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let chosen, let thumbnail = UIImage(data: chosen.data) {
+                    self.lastPhoto = thumbnail
+                }
+                self.exportBurst(urls: urls, batchID: batchID)
+            }
+        }
+    }
+
+    /// Local files already exist before this begins. An Apple Photos failure
+    /// never deletes a frame: unexported captures remain in TideLibrary.
+    private func exportBurst(urls: [URL], batchID: UUID) {
+        Task {
+            guard batchID == burstID else { return }
+            let granted = await requestPhotoLibraryAddAccess()
+            guard granted else {
+                burstStatus = "\(urls.count) photos safe in TideLibrary"
+                burstProcessing = false
+                TideCamLibraryStore.shared.refresh()
+                return
+            }
+
+            var exported = 0
+            let chunkSize = 25
+            for offset in stride(from: 0, to: urls.count, by: chunkSize) {
+                let chunk = Array(urls[offset..<min(urls.count, offset + chunkSize)])
+                burstStatus = "Saving \(exported)/\(urls.count) to Photos"
+                do {
+                    try await PHPhotoLibrary.shared().performChanges {
+                        for url in chunk {
+                            let request = PHAssetCreationRequest.forAsset()
+                            let options = PHAssetResourceCreationOptions()
+                            options.shouldMoveFile = false
+                            options.originalFilename = url.lastPathComponent
+                            request.addResource(with: .photo, fileURL: url, options: options)
+                        }
+                    }
+                    exported += chunk.count
+                    burstExportedCount = exported
+                    // Apple Photos has committed this batch; recoverable source
+                    // files can now be removed to avoid doubling storage use.
+                    for url in chunk { try? FileManager.default.removeItem(at: url) }
+                } catch {
+                    burstStatus = "\(exported) exported; remaining shots in TideLibrary"
+                    errorMessage = "Photos couldn't save all burst frames: \(error.localizedDescription). Unexported shots are safe in TideLibrary."
+                    break
+                }
+            }
+
+            if exported == urls.count {
+                burstStatus = "\(exported) photos saved · best shot selected"
+            }
+            if burstFailures > 0 {
+                burstStatus += " · \(burstFailures) missed"
+            }
+            burstProcessing = false
+            TideCamLibraryStore.shared.refresh()
+            TideCamLibraryStore.shared.refreshApplePhotos()
+        }
     }
 
     func captureDetailBurst(frameCount: Int? = nil) {
@@ -1091,18 +1294,6 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
                 self.detailFramesRemaining -= 1
                 self.detailProgress = 1 - (Double(self.detailFramesRemaining) / Double(max(self.detailFramesRequested, 1)))
                 self.captureNextDetailFrame()
-            } else if self.isBursting {
-                self.lastPhoto = image
-                self.burstCount += 1
-                self.saveToLibrary(data)
-
-                if self.burstRequested && self.burstCount < self.maximumBurstCount {
-                    self.captureNextBurstFrame()
-                } else {
-                    self.burstRequested = false
-                    self.isBursting = false
-                    self.isCapturing = false
-                }
             } else {
                 self.savePhotoWithOptionalEnhancement(data, preview: image)
             }
