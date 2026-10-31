@@ -52,6 +52,7 @@ targets:
         INFOPLIST_KEY_WKCompanionAppBundleIdentifier: com.jdarkyeka6.TideCam
         INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: NO
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   TideCamTests:
     type: bundle.unit-test
     platform: iOS
