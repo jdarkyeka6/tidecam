@@ -18,6 +18,12 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var burstCount = 0
     @Published var isRecording = false
     @Published var isPreparingVideo = false
+    @Published var isReconfiguringVideo = false
+    @Published var videoQuality: VideoQuality = .uhd30
+    @Published var actualVideoFormat = "Not configured"
+    @Published var videoStabilizationEnabled = true
+    @Published var faceEnhancementEnabled = true
+    @Published var videoStatus = ""
     @Published var flashMode: FlashMode = .auto
     @Published var lastPhoto: UIImage?
     @Published var errorMessage: String?
@@ -44,6 +50,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var position: AVCaptureDevice.Position = .back
+    private var configuredVideoMode = false
     private var detailFramesRemaining = 0
     private var detailFramesRequested = 0
     private var detailFrameData: [Data] = []
@@ -574,9 +581,126 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// Reconfigure capture only while idle, and report the ACTUAL format chosen
+    /// by AVFoundation rather than claiming 4K60 on an unsupported phone.
+    func setVideoMode(_ enabled: Bool, quality: VideoQuality? = nil) {
+        guard isConfigured, !isRecording, !isCapturing, !isPreparingVideo, !isReconfiguringVideo else { return }
+        if let quality { videoQuality = quality }
+        let requested = videoQuality
+        isReconfiguringVideo = true
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoInput?.device else {
+                Task { @MainActor in self?.isReconfiguringVideo = false }
+                return
+            }
+            self.session.beginConfiguration()
+            if enabled {
+                self.configureRecordingFormat(device, requested: requested)
+            } else if self.session.canSetSessionPreset(.photo) {
+                self.session.sessionPreset = .photo
+                self.configurePhotoOutputForMaximumQuality(device)
+            }
+            self.session.commitConfiguration()
+            self.configuredVideoMode = enabled
+            if enabled { self.configureRecordingConnection() }
+            self.publishCapabilities(for: device)
+            Task { @MainActor in
+                self.isReconfiguringVideo = false
+                self.actualVideoFormat = enabled ? self.recordingFormatLabel(for: device) : "Photo mode"
+            }
+        }
+    }
+
+    /// Caller must own a session configuration transaction.
+    /// Prefer an exact format with the requested frame rate, otherwise fall
+    /// back safely to a preset and display the resulting camera format.
+    private func configureRecordingFormat(_ device: AVCaptureDevice, requested: VideoQuality) {
+        let choices: [VideoQuality] = {
+            switch requested {
+            case .uhd60: return [.uhd60, .uhd30, .fhd60, .fhd30]
+            case .uhd30: return [.uhd30, .fhd30]
+            case .fhd60: return [.fhd60, .fhd30]
+            case .fhd30: return [.fhd30]
+            }
+        }()
+
+        for choice in choices {
+            let formats = device.formats.filter { format in
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return dimensions.width == choice.width &&
+                    dimensions.height == choice.height &&
+                    format.videoSupportedFrameRateRanges.contains {
+                        $0.minFrameRate <= Double(choice.fps) &&
+                        $0.maxFrameRate >= Double(choice.fps)
+                    }
+            }
+            guard let format = formats.first else { continue }
+            do {
+                try device.lockForConfiguration()
+                self.session.sessionPreset = .inputPriority
+                device.activeFormat = format
+                let duration = CMTime(value: 1, timescale: choice.fps)
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
+                device.unlockForConfiguration()
+                return
+            } catch {
+                continue
+            }
+        }
+
+        // On cameras exposing no exact format (e.g. some virtual cameras),
+        // prefer the highest supported session preset rather than failing.
+        for preset: AVCaptureSession.Preset in [
+            .hd4K3840x2160, .hd1920x1080, .high
+        ] {
+            if session.canSetSessionPreset(preset) {
+                session.sessionPreset = preset
+                return
+            }
+        }
+    }
+
+    private func recordingFormatLabel(for device: AVCaptureDevice) -> String {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let fpsTime = device.activeVideoMinFrameDuration
+        let fps: Int
+        if fpsTime.isValid && CMTimeGetSeconds(fpsTime) > 0 {
+            fps = Int((1 / CMTimeGetSeconds(fpsTime)).rounded())
+        } else {
+            fps = 0
+        }
+        let size = dimensions.width >= 3800 && dimensions.height >= 2100
+            ? "4K" : "\(dimensions.width)×\(dimensions.height)"
+        return fps > 0 ? "\(size) · \(fps) fps" : size
+    }
+
+    private func configureRecordingConnection() {
+        guard let connection = movieOutput.connection(with: .video) else { return }
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = videoStabilizationEnabled ? .auto : .off
+        }
+        // HEVC is supported in hardware on modern iPhones and provides better
+        // compression at typical quality levels. Fall back to the default codec.
+        if movieOutput.availableVideoCodecTypes.contains(.hevc),
+           movieOutput.supportedOutputSettingsKeys(for: connection).contains(AVVideoCodecKey) {
+            movieOutput.setOutputSettings([AVVideoCodecKey: AVVideoCodecType.hevc], for: connection)
+        }
+    }
+
+    func setVideoStabilization(_ enabled: Bool) {
+        guard !isRecording, !isPreparingVideo else { return }
+        videoStabilizationEnabled = enabled
+        sessionQueue.async { [weak self] in self?.configureRecordingConnection() }
+    }
+
     func toggleVideoRecording() {
-        if isRecording { movieOutput.stopRecording(); return }
-        guard isConfigured, capabilities.supportsVideo, !isCapturing, !isPreparingVideo else { return }
+        if isRecording {
+            sessionQueue.async { [weak self] in self?.movieOutput.stopRecording() }
+            return
+        }
+        guard isConfigured, capabilities.supportsVideo, !isCapturing,
+              !isPreparingVideo, !isReconfiguringVideo else { return }
         isPreparingVideo = true
         Task { beginVideoRecording(includeAudio: await requestMicrophoneAccessIfNeeded()) }
     }
@@ -592,22 +716,49 @@ final class CameraManager: NSObject, ObservableObject {
     private func beginVideoRecording(includeAudio: Bool) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            guard self.session.outputs.contains(where: { $0 === self.movieOutput }) else {
-                Task { @MainActor in self.isPreparingVideo = false; self.errorMessage = "Video recording is not available on this camera." }
+            guard self.session.outputs.contains(where: { $0 === self.movieOutput }),
+                  let device = self.videoInput?.device else {
+                Task { @MainActor in
+                    self.isPreparingVideo = false
+                    self.errorMessage = "Video recording is not available on this camera."
+                }
                 return
             }
-            if includeAudio, self.audioInput == nil, let microphone = AVCaptureDevice.default(for: .audio) {
+
+            // If the user tapped Record before selecting VIDEO, configure
+            // video quality on this same serial queue before recording.
+            if !self.configuredVideoMode {
+                self.session.beginConfiguration()
+                self.configureRecordingFormat(device, requested: self.videoQuality)
+                self.session.commitConfiguration()
+                self.configuredVideoMode = true
+                Task { @MainActor in self.actualVideoFormat = self.recordingFormatLabel(for: device) }
+            }
+
+            if includeAudio, self.audioInput == nil,
+               let microphone = AVCaptureDevice.default(for: .audio) {
                 do {
                     let input = try AVCaptureDeviceInput(device: microphone)
                     self.session.beginConfiguration()
-                    if self.session.canAddInput(input) { self.session.addInput(input); self.audioInput = input }
+                    if self.session.canAddInput(input) {
+                        self.session.addInput(input)
+                        self.audioInput = input
+                    }
                     self.session.commitConfiguration()
-                } catch { }
+                } catch {
+                    Task { @MainActor in self.videoStatus = "Microphone unavailable" }
+                }
             }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("TideCam-\(UUID().uuidString).mov")
-            if let connection = self.movieOutput.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
+            self.configureRecordingConnection()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "TideCam-\(UUID().uuidString).mov"
+            )
+            if let connection = self.movieOutput.connection(with: .video),
+               connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+            // isRecording changes only from the delegate's real start callback.
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
-            Task { @MainActor in self.isPreparingVideo = false; self.isRecording = true }
         }
     }
 
@@ -629,12 +780,18 @@ final class CameraManager: NSObject, ObservableObject {
                 self.position = newPosition
                 self.configurePhotoOutputForMaximumQuality(device)
                 self.prepareAutomaticCamera(device)
+                if self.configuredVideoMode {
+                    self.configureRecordingFormat(device, requested: self.videoQuality)
+                } else if self.session.canSetSessionPreset(.photo) {
+                    self.session.sessionPreset = .photo
+                }
                 self.publishCapabilities(for: device)
             } else {
                 self.session.addInput(currentInput)
                 self.videoInput = currentInput
             }
             self.session.commitConfiguration()
+            if self.configuredVideoMode { self.configureRecordingConnection() }
         }
     }
 
