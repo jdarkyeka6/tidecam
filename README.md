@@ -47,7 +47,7 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - Native virtual-camera photo fusion is requested when the phone supports it.
 - Optional **Zoom Enhance** for processed captures at 1.5× or higher. Uses conservative Core Image denoising and luminance sharpening, **not** a trained AI super-resolution model. It cannot restore genuine detail that the lens did not capture.
 - Original source photo is preserved privately in TideLibrary whenever enhancement succeeds; the enhanced version is saved to Apple Photos. Disable Zoom Enhance to save the untouched photo directly.
-- Detail mode still picks the strongest frame; its scoring now downsamples only for analysis and keeps original sensor-resolution data. It does not yet align or fuse multiple frames.
+- Detail mode ranks source frames for analysis and can optionally align/fuse accepted candidates; originals retain full sensor resolution.
 - RAW captures and rapid bursts remain unmodified.
 
 **Testing:** Requires the iOS Simulator build in GitHub Actions and a physical iPhone for lens switching, zoom image comparisons, memory use and EXIF/orientation checks. Do not promote to TestFlight before physical-device review.
@@ -69,3 +69,12 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - **FACE DETAIL** uses on-device Vision AI face detection and mild local unsharp-mask processing to enhance detected faces in still photos; it does not hallucinate/replace facial features. This is **not** a trained neural photo/video super-resolution model.
 - All still-photo enhancements retain an untouched source copy in TideLibrary before Photos receives a processed file.
 - Real-device testing is still required to confirm bitrate, actual 4K/60 fps, stabilization mode, and image quality. Simulator compilation alone is not camera validation.
+
+## Video Pro v0.3 candidate
+
+- **Recording safety:** Finished videos are stored in Photos only after write success; when Photos permission or saving fails, the actual MOV is moved to TideLibrary, avoiding needless loss or duplication. Nonempty interrupted recordings are also preserved as recoverable partial MOV files. Ordinary photo saves have local fallback.
+- **Creator controls:** Visible zoom slider while shooting video, tap-to-focus during recording, 24-hour-free recording time display, optional microphone audio, live torch and exposure compensation.
+- **Opt-in HDR:** Requests video HDR only where the active format supports it; actual status is displayed and unavailable formats fall back conservatively. This is not guaranteed Dolby Vision or 10-bit output. HDR is off by default for compatibility.
+- **Stabilisation status:** The interface shows whether stabilisation is active, pending or unsupported, rather than treating a requested feature as a guarantee.
+- **Recording lifecycle:** Explicit preparing, recording, finalising and saving states prevent accidental duplicate Stop actions.
+- **Video quality is never guaranteed by simulator compilation:** Verify on-device output dimensions/fps, stabilization, torch, HDR playback/colour and audio, plus prolonged thermal/storage performance.

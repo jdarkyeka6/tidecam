@@ -108,6 +108,18 @@ enum TideCamLibraryStorage {
         return destination
     }
 
+    /// Move a recorded movie into durable in-app storage. This avoids making
+    /// another full-size video copy when Photos permission is denied.
+    static func moveFile(from sourceURL: URL, preferredExtension: String? = nil) throws -> URL {
+        let ext = preferredExtension ?? sourceURL.pathExtension.lowercased()
+        let finalExtension = ext.isEmpty ? "mov" : ext
+        let destination = try directoryURL().appendingPathComponent(
+            "TideCam-\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(6)).\(finalExtension)"
+        )
+        try FileManager.default.moveItem(at: sourceURL, to: destination)
+        return destination
+    }
+
     static func detectedExtension(for data: Data) -> String {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let type = CGImageSourceGetType(source) else { return "jpg" }

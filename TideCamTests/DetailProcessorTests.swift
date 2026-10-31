@@ -42,6 +42,19 @@ final class DetailProcessorTests: XCTestCase {
         XCTAssertEqual(VideoQuality.allCases.count, 4)
     }
 
+    func testRecordingRecoveryMovesVideoIntoLibrary() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tidecam-backup-test-\(UUID().uuidString).mov")
+        let bytes = Data([0x00, 0x01, 0x02, 0x03])
+        try bytes.write(to: source)
+        let destination = try TideCamLibraryStorage.moveFile(from: source)
+        defer { try? FileManager.default.removeItem(at: destination) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        XCTAssertEqual(destination.pathExtension, "mov")
+    }
+
     func testRecipesUseSafeDetailFrameCounts() {
         XCTAssertTrue(CameraRecipe.builtIns.allSatisfy { (4...30).contains($0.detailFrames) })
     }
