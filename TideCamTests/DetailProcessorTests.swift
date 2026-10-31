@@ -55,6 +55,34 @@ final class DetailProcessorTests: XCTestCase {
         XCTAssertEqual(destination.pathExtension, "mov")
     }
 
+    func testBurstSamplingCoversBeginningMiddleAndEnd() {
+        let indices = BurstHighlightPicker.sampleIndices(total: 200, limit: 36)
+        XCTAssertEqual(indices.count, 36)
+        XCTAssertEqual(indices.first, 0)
+        XCTAssertEqual(indices.last, 199)
+        XCTAssertEqual(Set(indices).count, indices.count)
+        XCTAssertEqual(indices, indices.sorted())
+    }
+
+    func testBurstSamplingHandlesShortAndEmptySessions() {
+        XCTAssertEqual(BurstHighlightPicker.sampleIndices(total: 0), [])
+        XCTAssertEqual(BurstHighlightPicker.sampleIndices(total: 5, limit: 10), [0, 1, 2, 3, 4])
+        XCTAssertEqual(BurstHighlightPicker.sampleIndices(total: 100, limit: 1), [0])
+        XCTAssertEqual(BurstHighlightPicker.sampleIndices(total: 10, limit: 0), [])
+    }
+
+    func testBurstBestShotIgnoresUnreadableFiles() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-burst-\(UUID().uuidString).heic")
+        XCTAssertNil(BurstHighlightPicker().select(from: []))
+        XCTAssertNil(BurstHighlightPicker().select(from: [missing]))
+    }
+
+    func testBurstModesKeepCaptureConcurrencyBounded() {
+        XCTAssertEqual(BurstMode.fast.inFlightLimit, 3)
+        XCTAssertEqual(BurstMode.balanced.inFlightLimit, 2)
+    }
+
     func testRecipesUseSafeDetailFrameCounts() {
         XCTAssertTrue(CameraRecipe.builtIns.allSatisfy { (4...30).contains($0.detailFrames) })
     }
