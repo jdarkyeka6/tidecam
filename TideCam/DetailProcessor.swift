@@ -17,7 +17,18 @@ struct DetailProcessor {
     private let context = CIContext(options: [.cacheIntermediates: false])
 
     func bestCandidate(from frames: [Data]) -> Candidate? {
-        frames.compactMap(analyse).max { $0.score < $1.score }
+        // Only retain the winning full-resolution frame. Building an array of
+        // decoded 12MP+ images can cause memory pressure on older iPhones.
+        var best: Candidate?
+        for frame in frames {
+            autoreleasepool {
+                guard let candidate = analyse(frame) else { return }
+                if best == nil || candidate.score > best!.score {
+                    best = candidate
+                }
+            }
+        }
+        return best
     }
 
     private func analyse(_ data: Data) -> Candidate? {
@@ -40,7 +51,16 @@ struct DetailProcessor {
                        colorSpace: CGColorSpaceCreateDeviceRGB())
         let brightness = (Double(rgba[0]) + Double(rgba[1]) + Double(rgba[2])) / (3 * 255)
 
-        guard let cgImage = context.createCGImage(ciImage, from: extent) else { return nil }
+        // Sharpness scoring needs consistent image scale, not the complete
+        // sensor image. This makes 30-frame bursts practical on mobile devices.
+        let scale = min(1, 1024 / max(extent.width, extent.height))
+        let sample = scale < 1
+            ? ciImage.applyingFilter("CILanczosScaleTransform", parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1.0
+            ])
+            : ciImage
+        guard let cgImage = context.createCGImage(sample, from: sample.extent) else { return nil }
         let sharpness = laplacianVariance(cgImage)
 
         // Penalise frames approaching clipped black/white while strongly
