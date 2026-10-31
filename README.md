@@ -40,3 +40,14 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - Physical iPhone recommended
 
 > TideCam v0.1 is the foundation. Advanced computational modes will be added incrementally and capability-checked per device.
+
+## Zoom and photo-quality improvements (v0.2 preview)
+
+- Hardware-aware lens switches and a continuous zoom slider up to the device-supported limit (capped at 20× in this build).
+- Native virtual-camera photo fusion is requested when the phone supports it.
+- Optional **Zoom Enhance** for processed captures at 1.5× or higher. Uses conservative Core Image denoising and luminance sharpening, **not** a trained AI super-resolution model. It cannot restore genuine detail that the lens did not capture.
+- Original source photo is preserved privately in TideLibrary whenever enhancement succeeds; the enhanced version is saved to Apple Photos. Disable Zoom Enhance to save the untouched photo directly.
+- Detail mode still picks the strongest frame; its scoring now downsamples only for analysis and keeps original sensor-resolution data. It does not yet align or fuse multiple frames.
+- RAW captures and rapid bursts remain unmodified.
+
+**Testing:** Requires the iOS Simulator build in GitHub Actions and a physical iPhone for lens switching, zoom image comparisons, memory use and EXIF/orientation checks. Do not promote to TestFlight before physical-device review.
