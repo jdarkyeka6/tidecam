@@ -263,6 +263,40 @@ final class CameraManager: NSObject, ObservableObject {
         settings.maxPhotoDimensions = dimensions
     }
 
+    /// Turbo chooses the nearest hardware-supported still resolution around
+    /// 12MP, when available, to avoid forcing a huge 48MP decode on every
+    /// capture. Detail mode keeps the largest supported sensor output.
+    private func applyBurstPhotoDimensions(
+        to settings: AVCapturePhotoSettings,
+        mode: BurstMode
+    ) {
+        guard mode == .fast, let device = videoInput?.device else {
+            applyMaximumPhotoDimensions(to: settings)
+            return
+        }
+
+        let maximum = photoOutput.maxPhotoDimensions
+        let maximumPixels = Int64(maximum.width) * Int64(maximum.height)
+        let candidates = device.activeFormat.supportedMaxPhotoDimensions.filter {
+            Int64($0.width) * Int64($0.height) <= maximumPixels &&
+            $0.width > 0 && $0.height > 0
+        }
+        guard !candidates.isEmpty else {
+            applyMaximumPhotoDimensions(to: settings)
+            return
+        }
+
+        let preferredPixels: Int64 = 12_000_000
+        let chosen = candidates.min { lhs, rhs in
+            let l = Int64(lhs.width) * Int64(lhs.height)
+            let r = Int64(rhs.width) * Int64(rhs.height)
+            let lDistance = abs(l - preferredPixels)
+            let rDistance = abs(r - preferredPixels)
+            return lDistance == rDistance ? l < r : lDistance < rDistance
+        }
+        if let chosen { settings.maxPhotoDimensions = chosen }
+    }
+
     private func makeProcessedPhotoSettings() -> AVCapturePhotoSettings {
         if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
             return AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
@@ -470,7 +504,7 @@ final class CameraManager: NSObject, ObservableObject {
               burstPendingWrites < 5 &&
               burstCount + burstInFlight < limit {
             let settings = makeProcessedPhotoSettings()
-            applyMaximumPhotoDimensions(to: settings)
+            applyBurstPhotoDimensions(to: settings, mode: burstMode)
             settings.photoQualityPrioritization =
                 burstMode == .fast ? .speed : .balanced
 
