@@ -1,8 +1,11 @@
 name: TideCam to TestFlight
 
+# One-off candidate workflow on an isolated testing branch.
+# The main-branch TestFlight workflow stays unchanged.
 on:
   push:
-    branches: [main]
+    branches: [testflight/smart-fusion-20261031]
+    paths: [.github/workflows/testflight.yml]
   workflow_dispatch: {}
 
 permissions:
