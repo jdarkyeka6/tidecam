@@ -190,4 +190,42 @@ platform :ios do
     UI.message("DISTRIBUTION_CERTIFICATE_COUNT=#{certificates.length}")
   end
 
+  desc "Revoke only the explicitly selected oldest Apple Distribution certificate"
+  lane :revoke_old_distribution do
+    expected_id = "DPJ24D5FLB"
+    key_id = ENV["ASC_KEY_ID"].to_s.strip
+    issuer_id = ENV["ASC_ISSUER_ID"].to_s.strip
+    raw = ENV["ASC_KEY_CONTENT"].to_s.strip
+    UI.user_error!("Apple API credentials missing") if [key_id, issuer_id, raw].any?(&:empty?)
+    require "base64"
+    require "time"
+    key_text = raw.include?("BEGIN PRIVATE KEY") ? raw : Base64.decode64(raw)
+    UI.user_error!("Malformed key") unless key_text.include?("BEGIN PRIVATE KEY")
+    key_path = File.expand_path("~/tidecam_revoke_api_key.p8")
+    File.write(key_path, key_text)
+    app_store_connect_api_key(key_id: key_id, issuer_id: issuer_id, key_filepath: key_path)
+    require "spaceship"
+
+    allowed_types = [
+      Spaceship::ConnectAPI::Certificate::CertificateType::DISTRIBUTION,
+      Spaceship::ConnectAPI::Certificate::CertificateType::IOS_DISTRIBUTION
+    ]
+    candidates = Spaceship::ConnectAPI::Certificate.all
+      .select { |cert| allowed_types.include?(cert.certificate_type) }
+      .sort_by { |cert| Time.parse(cert.expiration_date.to_s) }
+    UI.user_error!("No Apple Distribution certificates found") if candidates.empty?
+    target = candidates.first
+    UI.user_error!("Certificate inventory changed. Expected #{expected_id}, got #{target.id}; refusing to revoke.") unless target.id == expected_id
+    UI.user_error!("Cannot revoke the only remaining distribution certificate") unless candidates.length >= 2
+    expected_expiration = Time.parse("2027-10-08T07:02:11Z")
+    UI.user_error!("Certificate expiry changed; refusing to revoke") unless Time.parse(target.expiration_date.to_s).to_i == expected_expiration.to_i
+
+    UI.important("Revoking specifically approved oldest Apple Distribution certificate #{target.id}. Other certificates remain unchanged.")
+    target.delete!
+    remaining = Spaceship::ConnectAPI::Certificate.all
+      .select { |cert| allowed_types.include?(cert.certificate_type) }
+    UI.user_error!("Revocation not verified: certificate still exists") if remaining.any? { |cert| cert.id == expected_id }
+    UI.success("Verified revoked Apple Distribution certificate #{expected_id}; remaining count=#{remaining.length}.")
+  end
+
 end
