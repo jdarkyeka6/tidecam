@@ -227,7 +227,8 @@ struct CameraView: View {
         if selectedMode == .video {
             return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isStoppingVideo || camera.isCapturing
         }
-        return !selectedMode.isImplemented || camera.isCapturing ||
+        return !selectedMode.isImplemented ||
+            (camera.isCapturing && !camera.isBursting) ||
             camera.isRecording || camera.isPreparingVideo ||
             camera.burstProcessing || camera.isReconfiguringVideo
     }
