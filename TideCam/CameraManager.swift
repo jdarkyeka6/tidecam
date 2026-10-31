@@ -30,6 +30,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var maximumZoomFactor: CGFloat = 1
     @Published var nativeZoomFactors: [CGFloat] = [1]
     @Published var zoomEnhanceEnabled = true
+    @Published var detailFusionEnabled = true
     @Published var zoomEnhanceStatus = ""
     @Published var detailProgress: Double = 0
     @Published var detailStatus = "Ready"
@@ -458,32 +459,61 @@ final class CameraManager: NSObject, ObservableObject {
     private func finishDetailBurst() {
         let frames = detailFrameData
         let enhance = zoomEnhanceEnabled && zoomFactor >= 1.5
+        let fuse = detailFusionEnabled
         let capturedZoom = zoomFactor
         detailStatus = "Analysing sharpness"
         processingQueue.async { [weak self] in
-            let best = DetailProcessor().bestCandidate(from: frames)
-            let processed: Data?
-            let keptOriginal: Bool
-            if let best, enhance,
-               let enhanced = ZoomEnhancer().enhance(best.data, zoomFactor: capturedZoom),
-               (try? TideCamLibraryStorage.save(best.data)) != nil {
-                processed = enhanced
-                keptOriginal = true
-            } else {
-                processed = nil
-                keptOriginal = false
+            // Rank encoded images instead of retaining many decoded UIImages.
+            let ranked = DetailProcessor().rankedFrames(from: frames)
+            guard let best = ranked.first else {
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.detailStatus = "Capture failed"
+                    self.detailFrameData.removeAll()
+                    self.detailProgress = 1
+                    self.isCapturing = false
+                    self.restoreAutomaticCamera()
+                }
+                return
             }
-            let processedPreview = processed.flatMap(UIImage.init(data:))
+
+            // Reject obviously softer or differently exposed images before
+            // alignment. Vision and the per-pixel mask handle smaller motion.
+            let alternatives = ranked.dropFirst().filter {
+                $0.sharpness >= best.sharpness * 0.65 &&
+                abs($0.brightness - best.brightness) <= 0.07
+            }.map(\.data)
+            let fusion = fuse
+                ? MultiFrameFusion().fuse(reference: best.data, alternatives: alternatives)
+                : nil
+
+            let fusedData = fusion?.data ?? best.data
+            let zoomData = enhance
+                ? ZoomEnhancer().enhance(fusedData, zoomFactor: capturedZoom)
+                : nil
+            let proposedData = zoomData ?? fusion?.data
+
+            // Never save a derivative as the only copy. If the original can't
+            // be preserved, use the best source photo without enhancement.
+            let originalSaved = proposedData != nil &&
+                (try? TideCamLibraryStorage.save(best.data)) != nil
+            let savedData = originalSaved ? (proposedData ?? best.data) : best.data
+            let preview = UIImage(data: savedData)
+            let framesFused = originalSaved ? (fusion?.frameCount ?? 1) : 1
+            let usedZoomEnhance = originalSaved && zoomData != nil
+
             Task { @MainActor in
                 guard let self else { return }
-                if let best {
-                    self.lastPhoto = processedPreview ?? best.image
-                    self.saveToLibrary(processed ?? best.data)
-                    self.detailStatus = keptOriginal ? "Enhanced + original kept" : "Best frame saved"
-                    if keptOriginal { TideCamLibraryStore.shared.refresh() }
+                self.lastPhoto = preview
+                self.saveToLibrary(savedData)
+                if framesFused > 1 {
+                    self.detailStatus = usedZoomEnhance
+                        ? "Fused \\(framesFused) frames + zoom enhanced"
+                        : "Fused \\(framesFused) frames"
                 } else {
-                    self.detailStatus = "Capture failed"
+                    self.detailStatus = usedZoomEnhance ? "Zoom enhanced" : "Best frame saved"
                 }
+                if originalSaved { TideCamLibraryStore.shared.refresh() }
                 self.detailFrameData.removeAll()
                 self.detailProgress = 1
                 self.isCapturing = false
