@@ -72,8 +72,28 @@ platform :ios do
       keychain_password: keychain_pw
     }
 
+    # Prefer a pre-existing signing identity from encrypted Actions secrets,
+    # instead of creating/revoking distribution certificates on each CI run.
+    existing_p12 = ENV["IOS_DISTRIBUTION_P12_BASE64"].to_s.strip
+    if !existing_p12.empty?
+      p12_password = ENV["IOS_DISTRIBUTION_P12_PASSWORD"].to_s
+      UI.user_error!("IOS_DISTRIBUTION_P12_PASSWORD missing") if p12_password.empty?
+      require "base64"
+      p12_path = File.expand_path("~/tidecam_distribution.p12")
+      File.binwrite(p12_path, Base64.strict_decode64(existing_p12))
+      import_certificate(
+        certificate_path: p12_path,
+        certificate_password: p12_password,
+        keychain_path: File.expand_path("~/Library/Keychains/#{keychain_name}-db"),
+        keychain_password: keychain_pw,
+        log_output: false
+      )
+      File.delete(p12_path)
+      UI.success("Imported existing distribution identity; no new signing certificate required.")
+    end
+
     # Never automatically revoke an existing distribution certificate.
-    # Failing safely is preferable to breaking other apps signed by this team.
+    # Without an importable identity, Fastlane must stop at Apple's limit.
     cert(**cert_args)
 
     profile_attempt = 0
