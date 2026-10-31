@@ -51,3 +51,11 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - RAW captures and rapid bursts remain unmodified.
 
 **Testing:** Requires the iOS Simulator build in GitHub Actions and a physical iPhone for lens switching, zoom image comparisons, memory use and EXIF/orientation checks. Do not promote to TestFlight before physical-device review.
+
+## v0.2+ Smart Fusion in Detail mode
+
+- **SMART FUSION ON:** TideCam ranks its burst, filters blurry/exposure-mismatched frames, aligns up to four additional photos using Apple's Vision translation registration, and blends stable areas using a per-pixel motion mask. Movement and parallax are handled conservatively, not perfectly.
+- **SMART FUSION OFF:** Keep the previous best-frame-only Detail workflow.
+- The original, sharpest source shot is stored in private TideLibrary before a fused or zoom-enhanced derivative is saved to Apple Photos. If original backup or fusion fails, the best source is saved directly instead.
+- The number of frames *actually fused* is shown in the Detail status. Requested frames and fused frames are different.
+- Smart Fusion is computational denoising at original resolution. **No neural super-resolution model is included**, and results vary by scene, lighting, movement, and camera hardware.
