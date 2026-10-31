@@ -107,6 +107,9 @@ struct CameraView: View {
             if selectedMode == .pro { proPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .detail { detailPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
             if selectedMode == .video { videoPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
+            if selectedMode == .photo || selectedMode == .pro {
+                burstPanel.transition(.move(edge: .bottom).combined(with: .opacity))
+            }
 
             VStack(spacing: 22) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -224,7 +227,9 @@ struct CameraView: View {
         if selectedMode == .video {
             return !camera.capabilities.supportsVideo || camera.isPreparingVideo || camera.isReconfiguringVideo || camera.isStoppingVideo || camera.isCapturing
         }
-        return !selectedMode.isImplemented || (camera.isCapturing && !camera.isBursting) || camera.isRecording || camera.isPreparingVideo
+        return !selectedMode.isImplemented || camera.isCapturing ||
+            camera.isRecording || camera.isPreparingVideo ||
+            camera.burstProcessing || camera.isReconfiguringVideo
     }
 
     private var zoomControl: some View {
@@ -351,6 +356,94 @@ struct CameraView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         .padding(.horizontal, 18)
         .padding(.bottom, 14)
+    }
+
+    private var burstPanel: some View {
+        VStack(spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "camera.on.rectangle")
+                    .foregroundStyle(.yellow)
+                Text("BURST PRO")
+                    .font(.caption.bold())
+                    .tracking(1)
+                Spacer()
+                if camera.isBursting {
+                    Text("\(camera.burstCount) captured")
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(.yellow)
+                    Text(String(format: "%.1f/s", camera.burstCaptureRate))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.7))
+                } else if camera.burstProcessing {
+                    ProgressView().tint(.yellow)
+                    Text("Saving").font(.caption2.bold())
+                } else {
+                    Text("\(camera.burstShotLimit) max")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+            }
+
+            if !camera.isBursting && !camera.burstProcessing {
+                HStack(spacing: 8) {
+                    ForEach(BurstMode.allCases) { mode in
+                        Button {
+                            camera.burstMode = mode
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 11, weight: .bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    camera.burstMode == mode ? Color.yellow : Color.white.opacity(0.12),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(camera.burstMode == mode ? .black : .white)
+                        }
+                    }
+                    Menu {
+                        ForEach([25, 50, 100, 200], id: \.self) { limit in
+                            Button("\(limit) photos") { camera.burstShotLimit = limit }
+                        }
+                    } label: {
+                        Text("\(camera.burstShotLimit) MAX")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(.white.opacity(0.16), in: Capsule())
+                    }
+                }
+
+                HStack {
+                    Image(systemName: "sparkles.rectangle.stack")
+                    Text("Auto best shot")
+                        .font(.caption2.bold())
+                    Spacer()
+                    Toggle("Auto best shot", isOn: $camera.burstHighlightEnabled)
+                        .labelsHidden()
+                        .tint(.yellow)
+                }
+                .font(.caption2)
+            }
+
+            Text(camera.isBursting
+                 ? "Hold to keep shooting. Release to finish; processing runs after capture."
+                 : camera.burstProcessing
+                    ? camera.burstStatus
+                    : camera.burstCount > 0
+                        ? camera.burstStatus
+                        : "Hold the shutter. Turbo prioritises speed; Detail balances quality.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+        }
+        .foregroundStyle(.white)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 8)
     }
 
     private var videoPanel: some View {
