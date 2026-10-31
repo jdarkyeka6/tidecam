@@ -246,6 +246,12 @@ final class CameraManager: NSObject, ObservableObject {
             photoOutput.isFastCapturePrioritizationEnabled = true
         }
 
+        // Prepare a rolling pre-shutter image buffer where supported, giving
+        // capture requests access to a recent frame rather than only future frames.
+        if photoOutput.isZeroShutterLagSupported {
+            photoOutput.isZeroShutterLagEnabled = true
+        }
+
         if photoOutput.isContentAwareDistortionCorrectionSupported {
             photoOutput.isContentAwareDistortionCorrectionEnabled = true
         }
@@ -460,7 +466,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// unlimited full-size images or block the camera on Photos save dialogs.
     /// Hardware and image processing determine actual throughput.
     private func pumpBurst() {
-        let maxInFlight = burstMode == .fast ? 3 : 2
+        let maxInFlight = burstMode.inFlightLimit
         let limit = min(max(burstShotLimit, 5), maximumBurstCount)
         while burstRequested &&
               burstInFlight < maxInFlight &&
