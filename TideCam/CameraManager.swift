@@ -833,7 +833,10 @@ final class CameraManager: NSObject, ObservableObject {
         isStoppingVideo = false
         videoStatus = "Preparing recording"
         let wantsAudio = videoAudioEnabled
-        Task { beginVideoRecording(includeAudio: wantsAudio && (await requestMicrophoneAccessIfNeeded())) }
+        Task {
+            let includeAudio = wantsAudio ? await requestMicrophoneAccessIfNeeded() : false
+            beginVideoRecording(includeAudio: includeAudio)
+        }
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
