@@ -2,7 +2,8 @@ name: TideCam to TestFlight
 
 on:
   push:
-    branches: [main]
+    branches: [testflight/watch-burst-video-20261101]
+    paths: [.github/workflows/testflight.yml]
   workflow_dispatch: {}
 
 permissions:
@@ -14,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
       - name: Check out TideCam
@@ -22,10 +23,9 @@ jobs:
 
       - name: Select Xcode
         run: |
-          if [ -d /Applications/Xcode_26.3.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.3.app
-          fi
           xcodebuild -version
+          xcrun --sdk watchos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Generate temporary TideCam app icon
         run: python3 ios-ci/generate_app_icon.py
