@@ -442,6 +442,7 @@ struct CameraView: View {
                 ))
                 .labelsHidden()
                 .tint(.yellow)
+                .disabled(camera.isRecording)
             }
             HStack {
                 Text("Microphone").font(.caption2)
@@ -452,6 +453,7 @@ struct CameraView: View {
                 ))
                 .labelsHidden()
                 .tint(.yellow)
+                .disabled(camera.isRecording)
             }
             HStack {
                 Text("HDR video").font(.caption2)
@@ -465,6 +467,7 @@ struct CameraView: View {
                 ))
                 .labelsHidden()
                 .tint(.yellow)
+                .disabled(camera.isRecording)
             }
             HStack(spacing: 10) {
                 Text("EV").font(.caption2.bold())
@@ -481,7 +484,7 @@ struct CameraView: View {
                     .frame(width: 38)
             }
         }
-        .disabled(camera.isRecording || camera.isPreparingVideo ||
+        .disabled(camera.isPreparingVideo ||
                   camera.isReconfiguringVideo || camera.isStoppingVideo)
     }
 
