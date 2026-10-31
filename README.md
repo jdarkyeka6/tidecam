@@ -59,3 +59,13 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - The original, sharpest source shot is stored in private TideLibrary before a fused or zoom-enhanced derivative is saved to Apple Photos. If original backup or fusion fails, the best source is saved directly instead.
 - The number of frames *actually fused* is shown in the Detail status. Requested frames and fused frames are different.
 - Smart Fusion is computational denoising at original resolution. **No neural super-resolution model is included**, and results vary by scene, lighting, movement, and camera hardware.
+
+## Video and face-detail improvements (October 2026)
+
+- VIDEO now offers hardware-checked **4K 60, 4K 30, 1080p 60 and 1080p 30** profiles, with automatic fallback where unsupported; the selected and actual capture formats are displayed separately.
+- **Automatic video stabilisation** can be switched on or off before recording. The device can decline stabilization when the selected format/rate does not support it.
+- **HEVC/H.265** is requested when supported by the camera/output, with system-codec fallback.
+- A previously optimistic recording flag is now set only once AVFoundation confirms recording started, reducing false "REC" states.
+- **FACE DETAIL** uses on-device Vision AI face detection and mild local unsharp-mask processing to enhance detected faces in still photos; it does not hallucinate/replace facial features. This is **not** a trained neural photo/video super-resolution model.
+- All still-photo enhancements retain an untouched source copy in TideLibrary before Photos receives a processed file.
+- Real-device testing is still required to confirm bitrate, actual 4K/60 fps, stabilization mode, and image quality. Simulator compilation alone is not camera validation.
