@@ -388,10 +388,7 @@ final class CameraManager: NSObject, ObservableObject {
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
-    /// Hold-to-shoot burst. Burst deliberately captures processed HEIF/JPEG frames
-    /// with speed prioritization so the camera can keep firing instead of waiting
-    /// for the heavier single-shot quality pipeline between every frame.
-    /// On-device zoom/face processing keeps the sharpest original photo.
+    /// Single-photo zoom and face processing never modifies the original source.
     /// Enhanced derivatives are saved to Photos, never in place of the original.
     private func savePhotoWithOptionalEnhancement(_ data: Data, preview: UIImage) {
         let capturedZoom = zoomFactor
@@ -588,14 +585,14 @@ final class CameraManager: NSObject, ObservableObject {
                 if let chosen, let thumbnail = UIImage(data: chosen.data) {
                     self.lastPhoto = thumbnail
                 }
-                self.exportBurst(urls: urls, batchID: batchID)
+                self.exportBurst(urls: urls, batchID: batchID, highlightFound: chosen != nil)
             }
         }
     }
 
     /// Local files already exist before this begins. An Apple Photos failure
     /// never deletes a frame: unexported captures remain in TideLibrary.
-    private func exportBurst(urls: [URL], batchID: UUID) {
+    private func exportBurst(urls: [URL], batchID: UUID, highlightFound: Bool) {
         Task {
             guard batchID == burstID else { return }
             let granted = await requestPhotoLibraryAddAccess()
@@ -634,7 +631,8 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             if exported == urls.count {
-                burstStatus = "\(exported) photos saved · best shot selected"
+                burstStatus = "\(exported) photos saved to Photos" +
+                    (highlightFound ? " · best preview chosen" : "")
             }
             if burstFailures > 0 {
                 burstStatus += " · \(burstFailures) missed"
