@@ -78,3 +78,19 @@ Night stacking, HDR fusion, RAW workflows, recipes and advanced computational ph
 - **Stabilisation status:** The interface shows whether stabilisation is active, pending or unsupported, rather than treating a requested feature as a guarantee.
 - **Recording lifecycle:** Explicit preparing, recording, finalising and saving states prevent accidental duplicate Stop actions.
 - **Video quality is never guaranteed by simulator compilation:** Verify on-device output dimensions/fps, stabilization, torch, HDR playback/colour and audio, plus prolonged thermal/storage performance.
+
+## Burst Pro v0.4 candidate
+
+**Hold the shutter in PHOTO or PRO mode** to capture an action burst. Choose Turbo or Detail and a 25, 50, 100 or 200 photo limit.
+
+- **Turbo** requests fast image delivery, keeps at most **3** outstanding still captures and selects a hardware-supported size close to **12 MP** if offered. If the camera does not support a smaller still format, it falls back to its available resolution.
+- **Detail** uses balanced photo quality, at most **2** outstanding still captures and the camera's largest configured still dimensions.
+- Burst uses a dedicated photo delegate per request. Results can arrive out of order. A bounded queue keeps background disk writes from overwhelming RAM; a dedicated writer stores the original source file before another shot can overrun the queue.
+- Photos are **first saved to TideLibrary**, then exported to Apple Photos in transactions of **25**. Successful batches have their duplicate local staging files removed. If Photos access/save fails, unexported images remain in TideLibrary rather than being thrown away.
+- **Best-shot preview (sampled)** analyzes up to **36** evenly spaced frames after shooting and chooses the highest sharpness/exposure score. It is not a neural model and doesn't guarantee the best frame of every 200-shot session.
+- Live interface reports the number captured and the **observed completed-photo rate**, not a promised sensor FPS. Faster rates are dependent on device, exposure, format, lighting, thermal state and storage speed.
+- Maximum 200 photos per session protects device memory and storage. A session stops after repeated capture failures or a storage write error.
+- Supported zero-shutter-lag, responsive capture, and fast capture prioritization are enabled at photo-session configuration time.
+- **Validate on iPhone:** full 200-shot stress test, capture timings, press-release stopping, photo orientation/colour, local fallback when Photos access denied, disk-full behaviour and review of the sampled best shot. A successful simulator compilation is not a performance guarantee.
+
+TideCam's normal PHOTO shutter remains available while the previous burst is exporting; starting another burst waits until its export finishes.
