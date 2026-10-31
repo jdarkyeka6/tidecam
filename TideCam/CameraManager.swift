@@ -479,6 +479,7 @@ final class CameraManager: NSObject, ObservableObject {
         let frames = detailFrameData
         let enhance = zoomEnhanceEnabled && zoomFactor >= 1.5
         let fuse = detailFusionEnabled
+        let enhanceFaces = faceEnhancementEnabled
         let capturedZoom = zoomFactor
         detailStatus = "Analysing sharpness"
         processingQueue.async { [weak self] in
@@ -510,7 +511,7 @@ final class CameraManager: NSObject, ObservableObject {
             let zoomData = enhance
                 ? ZoomEnhancer().enhance(fusedData, zoomFactor: capturedZoom)
                 : nil
-            let faceData = faceEnhancementEnabled
+            let faceData = enhanceFaces
                 ? FaceEnhancer().enhance(zoomData ?? fusedData, zoomFactor: capturedZoom)
                 : nil
             let proposedData = faceData ?? zoomData ?? fusion?.data
