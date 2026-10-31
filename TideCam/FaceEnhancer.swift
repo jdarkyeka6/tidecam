@@ -40,7 +40,7 @@ struct FaceEnhancer {
             let height = extent.height * bounds.height
             guard width >= 30, height >= 30 else { continue }
 
-            let center = CIVector(
+            let center = CGPoint(
                 x: extent.minX + extent.width * bounds.midX,
                 y: extent.minY + extent.height * bounds.midY
             )
