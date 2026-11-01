@@ -1,0 +1,32 @@
+name: Verify shared Apple signing configuration
+
+on:
+  push:
+    branches: [ci/shared-signing-preview]
+    paths:
+      - ios-ci/Fastfile
+      - .github/workflows/verify-shared-signing.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Fastlane syntax
+        run: ruby -c ios-ci/Fastfile
+      - name: Enforce readonly shared signing
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path("ios-ci/Fastfile").read_text()
+          assert 'match(' in source, 'Fastlane Match is missing'
+          assert 'readonly: true' in source, 'Fastlane Match must be read-only in CI'
+          assert 'MATCH_GIT_URL' in source and 'MATCH_PASSWORD' in source
+          assert 'MATCH_GIT_BASIC_AUTHORIZATION' in source
+          assert '.delete!' not in source, 'Certificate deletion must not be automated'
+          print('Shared signing syntax and safeguards verified.')
+          PY
